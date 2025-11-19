@@ -11,7 +11,526 @@ knit: (function(input,...) {
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(echo = TRUE,message=FALSE, warning=FALSE)
+
+library(tidyverse)
+
+theme_c <- function(...){ 
+   # font <- "Helvetica"   #assign font family up front
+  #  font <- "Arial"
+    theme_bw() %+replace%    #replace elements we want to change
+    
+    theme(
+      
+      #text elements
+      plot.title = element_text(             #title
+                 #  family = font,            #set font family
+                   size = 11,                #set font size
+                   face = 'bold',            #bold typeface
+                   hjust = .5,
+                   vjust = 3),               
+      
+      plot.subtitle = element_text(          #subtitle
+                #   family = font,            #font family
+                   size = 10,
+                   hjust = .5,
+                   face = 'italic',
+                   vjust = 3),               #font size
+      
+      axis.title = element_text(             #axis titles
+                #   family = font,            #font family
+                   size = 10),               #font size
+      
+      axis.text = element_text(              #axis text
+                #   family = font,            #axis famuly
+                   size = 8),
+      strip.text = element_text(color="white", size = 9,
+                                margin=unit(c(.1,.1,.1,.1), 'cm')),
+      strip.background = element_rect(fill = "#363636"),
+      # t, r, b, l
+      plot.margin = unit(c(1,.5,.5,.5), "cm")
+      ) %+replace%
+      theme(...)
+   
+}
+
+
 ```
 
 # Set Up 
+
+Need to discretize time such that positivity holds but such that we only have one event... Perhaps think about this more  
+
+let Y_k be # depredation events in interval
+describe that we must pick coarsening scheme such that 
+
+```{r,eval=FALSE,include=FALSE}
+
+# 2-month intervals 
+expit <- function(x) {
+  exp(x)/(1+exp(x))
+}
+
+
+
+#----------------------------------------------------------------
+# Baseline covariates: number of wolves in pack at study start 
+#----------------------------------------------------------------
+n_packs <- 50 
+lambda_0 <- 10 
+L0 <- rpois(n_packs, lambda_0)
+
+# first depredation event
+prob_event <- plogis(-2 + 2*scale(L0)) 
+
+tibble(x=prob_event) %>%
+  ggplot(aes(x=x)) + geom_histogram()
+
+Y1 <- rbinom(n_packs, size=1, prob=prob_event)
+
+current_dat <- bind_cols(L0=L0, Y1=Y1)
+current_dat <- get_treatment_at_k(1, current_dat)
+current_dat <- get_L_at_k(1, current_dat)
+
+
+get_L_at_k <- function(time_point, dat) {
+  # L_{k-1}
+  L_prev <- dat %>% pull(paste0("L", time_point-1))
+  # A_{k}
+  A1_prev <- dat %>% pull(paste0("A", time_point, "1"))
+  # Y_{k} 
+  Y_prev <- dat %>% pull(paste0("Y", time_point))
+  
+  # wolves previously - wolves killed + term (adding or subtracting one)
+  # accounting for death/birth
+  # more likely to be birth if Y_prev was 1 (well fed)
+  # term accounting for death/birth more likely to be positive 
+  
+  prob_birth <- ifelse(Y_prev == 1, .7, .5)
+  
+  L_new <- L_prev - A1_prev + 2*rbinom(n_packs, size=1, prob_birth) - 1
+  
+  # if pack is less than 3 already, only stay the same or grow 
+  L_new <- ifelse(L_new <= 3, L_prev + 
+                  rbinom(n_packs, size=1, prob=.5), 
+                  L_new)
+
+  Lname <- paste0("L", time_point)
+  
+  return(dat %>% 
+           bind_cols(tibble(!!Lname := L_new))
+         )
+}
+
+get_treatment_at_k <- function(time_point, dat) {
+  
+  # L_{k-1}, Y_{k}
+  L_prev <- dat %>% pull(paste0("L", time_point-1))
+  Y_prev <- dat %>% pull(paste0("Y", time_point))
+  
+  prob_event <- plogis(-1+ 1*scale(L0)) 
+
+  A11 <- rbinom(n_packs, 
+                size=pmin(3, L_prev), 
+                prob=prob_event)
+  A11 <- ifelse(Y_prev == 0, 0, A11)
+  
+  A12 <- rbinom(n_packs, size=1, prob=.5*ifelse(A11 > 0, 1, 0))
+  
+  name1 <- paste0("A", time_point, "1")
+  name2 <- paste0("A", time_point, "2")
+  
+  dat %>% 
+    bind_cols(tibble(!!name1 := A11,
+         !!name2 := A12))
+
+}
+
+get_outcome_at_k <- function(time_point, dat) {
+  
+    # Y_{k-1}
+    Y_prev <- dat %>% pull(paste0("Y", time_point-1))
+    
+    # L_{k-1}
+    Y_prev <- dat %>% pull(paste0("Y", time_point-1))
+    
+    # A_{(k-1),1}
+    A1_prev <- dat %>% pull(paste0("A", time_point-1, 1))
+    
+    prob_event <- plogis(
+      -2 +  
+        # more likely to kill if killed before 
+        1.5*ifelse(Y_prev==1, 2, 1)*scale(L0)
+        # less likely to kill if lost pack members to intervention
+      -.75 * A1_prev ) 
+    
+    Y_new <- rbinom(n_packs, size=1, prob=prob_event)
+    Yname <- paste0("Y", time_point)
+
+    dat %>% 
+      bind_cols(tibble(
+        !!Yname := Y_new))
+}
+
+
+
+
+
+tibble(L= L_prev, prob = prob_event ) %>%
+  ggplot(aes(x=L, y=prob)) +
+  geom_point()
+
+tibble(x=prob_event) %>%
+  ggplot(aes(x=x)) + geom_histogram()
+
+tibble(x=A11) %>%
+  ggplot(aes(x=x)) + geom_histogram()
+
+
+
+
+```
+
+```{r simulation-functions}
+
+get_L_at_k <- function(time_point, dat, n_packs) {
+  # L_{k-1}
+  L_prev <- dat %>% pull(paste0("L", time_point-1))
+  # A_{k}
+  A1_prev <- dat %>% pull(paste0("A", time_point, "_1"))
+  # Y_{k} 
+  Y_prev <- dat %>% pull(paste0("Y", time_point))
+  
+  # wolves previously - wolves killed + term (adding or subtracting one)
+  # accounting for death/birth
+  # more likely to be birth if Y_prev was 1 (well fed)
+  # term accounting for death/birth more likely to be positive 
+  
+  prob_birth <- ifelse(Y_prev == 1, .7, .5)
+  
+  L_new <- L_prev - A1_prev + 2*rbinom(n_packs, size=1, prob_birth) - 1
+  
+  # if pack is less than 3 already, only stay the same or grow 
+  L_new <- ifelse(L_new <= 3, L_prev + 
+                  rbinom(n_packs, size=1, prob=.5), 
+                  L_new)
+
+  Lname <- paste0("L", time_point)
+  
+  return(dat %>% 
+           bind_cols(tibble(!!Lname := L_new))
+         )
+}
+
+get_treatment_at_k <- function(time_point, dat, n_packs) {
+  
+  # L_{k-1}, Y_{k}
+  L_prev <- dat %>% pull(paste0("L", time_point-1))
+  Y_prev <- dat %>% pull(paste0("Y", time_point))
+  
+  prob_event <- plogis(-1+ 1*scale(L_prev)) 
+
+  A11 <- rbinom(n_packs, 
+                size=pmin(3, L_prev), 
+                # multiplying by another bernoulli to make zero more probable
+                prob=prob_event*rbinom(n_packs, size=1, prob=.7))
+  
+  A11 <- ifelse(Y_prev == 0, 0, A11)
+  
+  A12 <- rbinom(n_packs, size=1, 
+                prob=.5*ifelse(A11 > 0, 1, 0))
+  
+  name1 <- paste0("A", time_point, "_1")
+  name2 <- paste0("A", time_point, "_2")
+  
+  dat %>% 
+    bind_cols(tibble(!!name1 := A11,
+         !!name2 := A12))
+
+}
+
+get_outcome_at_k <- function(time_point, dat, n_packs) {
+  
+    # Y_{k-1}
+    Y_prev <- dat %>% pull(paste0("Y", time_point-1))
+    
+    # L_{k-1}
+    L_prev <- dat %>% pull(paste0("L", time_point-1))
+    
+    # A_{(k-1),1}
+    A1_prev <- dat %>% pull(paste0("A", time_point-1, "_", 1))
+    
+    prob_event <- plogis(
+      -2 +  
+        # more likely to kill if killed before 
+        1.5*ifelse(Y_prev==1, 2, 1)*scale(L_prev)
+        # less likely to kill if lost pack members to intervention
+      -.75 * A1_prev ) 
+    
+    Y_new <- rbinom(n_packs, size=1, prob=prob_event)
+    Yname <- paste0("Y", time_point)
+
+    dat %>% 
+      bind_cols(tibble(
+        !!Yname := Y_new))
+}
+
+
+
+```
+
+
+```{r}
+
+YEARS <- 5
+K <- (YEARS*12)/2
+
+#----------------------------------------------------------------
+# Baseline covariates: number of wolves in pack at study start 
+#----------------------------------------------------------------
+n_packs <- 50 
+lambda_0 <- 10 
+L0 <- rpois(n_packs, lambda_0)
+
+# first depredation event
+prob_event <- plogis(-2 + 2*scale(L0)) 
+
+# tibble(x=prob_event) %>%
+#   ggplot(aes(x=x)) + geom_histogram()
+
+Y1 <- rbinom(n_packs, size=1, prob=prob_event)
+current_dat <- bind_cols(L0=L0, Y1=Y1)
+
+
+for (i in 1:K) {
+  current_dat <- get_treatment_at_k(i, current_dat)
+  current_dat <- get_L_at_k(i, current_dat)
+  current_dat <- get_outcome_at_k(i+1, current_dat)
+}
+
+```
+
+
+```{r}
+
+run_simulation <- function(years, n_packs) {
+  
+  YEARS <- years
+  K <- (YEARS*12)/2
+  
+  #----------------------------------------------------------------
+  # Baseline covariates: number of wolves in pack at study start 
+  #----------------------------------------------------------------
+  #n_packs <- 50 
+  lambda_0 <- 10 
+  L0 <- rpois(n_packs, lambda_0)
+  
+  # first depredation event
+  prob_event <- plogis(-2 + 2*scale(L0)) 
+  
+  # tibble(x=prob_event) %>%
+  #   ggplot(aes(x=x)) + geom_histogram()
+  
+  Y1 <- rbinom(n_packs, size=1, prob=prob_event)
+  current_dat <- bind_cols(L0=L0, Y1=Y1)
+
+  for (i in 1:K) {
+    current_dat <- get_treatment_at_k(i, current_dat, n_packs)
+    current_dat <- get_L_at_k(i, current_dat, n_packs)
+    current_dat <- get_outcome_at_k(i+1, current_dat, n_packs)
+  }
+  
+  return(current_dat)
+
+}
+
+
+current_dat <- run_simulation(years=5, n_packs=50)
+
+
+```
+
+  
+
+
+# Data Quality Checks  {.tabset}
+
+## Pack Size
+
+```{r}
+
+L_length <- current_dat %>% 
+  select(contains("L")) %>%
+  ncol()
+
+current_dat %>%
+  select(contains("L")) %>%
+  pivot_longer(cols=everything()) %>%
+  mutate(name = factor(name, levels=c(paste0("L", 0:L_length)))) %>%
+  ggplot(aes(x=value)) +
+  geom_histogram() + 
+  facet_wrap(~name)+
+  theme_c()  +
+  labs(title="Distribution of the Pack Size, by Interval")
+
+
+```
+
+## Wolves Removed Among the Treated
+
+```{r}
+
+A_length <- current_dat %>%
+  select(starts_with("A") & contains("_1")) %>% 
+  ncol()
+
+counts_of_treatment_among_events <- map_df(1:A_length, ~{
+  dat <- current_dat %>%
+    select(all_of(c( paste0("A", .x, "_1"), 
+                     paste0("Y", .x)))) %>%
+             group_by(across(everything())) %>%
+             summarize(n=n()) %>%
+             filter(!if_all(-n,~ .x==0)) %>%
+    mutate(time_point=.x)
+  colnames(dat) <- c("A", "Y", "n", "time_point")
+  return(dat)
+})
+
+counts_of_treatment_among_events %>%
+  ggplot(aes(x=A, y= n)) +
+  geom_bar(stat="identity") +
+  facet_wrap(~time_point) +
+  labs(x="Wolves Removed",
+       title="Wolves Removed Among Those with an Event",
+       y="Count") +
+  theme_c() 
+
+```
+
+```{r, eval=FALSE,include=FALSE}
+
+current_dat %>%
+  group_by(A1_1, Y1) %>%
+  summarize(n=n())
+
+
+current_dat %>%
+  select(starts_with("A") & contains("_1"),
+         contains("Y")) %>%
+  pivot_longer(cols=everything()) %>%
+  mutate(name = factor(name, levels=c(paste0("A", 0:A_length, "_1")))) %>%
+  ggplot(aes(x=value, fill=)) +
+  geom_histogram() + 
+  facet_wrap(~name)+
+  theme_c() 
+
+
+
+```
+
+
+
+```{r,eval=FALSE}
+
+current_dat %>%
+  group_by(A21, Y2) %>%
+  summarize(n=n())
+
+
+current_dat %>%
+  group_by(A31, Y3) %>%
+  summarize(n=n())
+
+```
+
+
+```{r,eval=FALSE}
+
+current_dat %>%
+  pivot_longer(cols=everything()) %>%
+  ggplot(aes(x=value)) +
+  geom_histogram() + 
+  facet_wrap(~name) +
+  theme_c() 
+
+```
+
+```{r,eval=FALSE}
+
+get_L_at_k <- function(time_point, dat) {
+  # L_{k-1}
+  L_prev <- dat %>% pull(paste0("L", time_point-1))
+  # A_{k}
+  A1_prev <- dat %>% pull(paste0("A", time_point, "1"))
+  # Y_{k} 
+  Y_prev <- dat %>% pull(paste0("Y", time_point))
+  
+  # wolves previously - wolves killed + term (adding or subtracting one)
+  # accounting for death/birth
+  # more likely to be birth if Y_prev was 1 (well fed)
+  # term accounting for death/birth more likely to be positive 
+  
+  prob_birth <- ifelse(Y_prev == 1, .7, .5)
+    
+  L_new <- L_prev - A1_prev + 2*rbinom(n_packs, size=1, prob_birth) - 1
+  
+  Lname <- paste0("L", time_point)
+  
+  return(dat %>% 
+           bind_cols(tibble(!!Lname := L_new))
+         )
+}
+
+get_treatment_at_k <- function(time_point, dat) {
+  
+  # L_{k-1}, Y_{k}
+  L_prev <- dat %>% pull(paste0("L", time_point-1))
+  Y_prev <- dat %>% pull(paste0("Y", time_point))
+  
+  prob_event <- plogis(-1+ 1*scale(L0)) 
+
+  A11 <- rbinom(n_packs, size=pmin(3, L_prev), prob=prob_event)
+  A11 <- ifelse(Y_prev == 0, 0, A11)
+  
+  A12 <- rbinom(n_packs, size=1, prob=.5*ifelse(A11 > 0, 1, 0))
+  
+  name1 <- paste0("A", time_point, "1")
+  name2 <- paste0("A", time_point, "2")
+  
+  dat %>% 
+    bind_cols(tibble(!!name1 := A11,
+         !!name2 := A12))
+
+}
+
+get_outcome_at_k <- function(time_point, dat) {
+  
+    # Y_{k-1}
+    Y_prev <- dat %>% pull(paste0("Y", time_point-1))
+    
+    # L_{k-1}
+    Y_prev <- dat %>% pull(paste0("Y", time_point-1))
+    
+    # A_{(k-1),1}
+    A1_prev <- dat %>% pull(paste0("A", time_point-1, 1))
+    
+    prob_event <- plogis(
+      -2 +  
+        # more likely to kill if killed before 
+        1.5*ifelse(Y_prev==1, 2, 1)*scale(L0)
+        # less likely to kill if lost pack members to intervention
+      -.75 * A1_prev ) 
+    
+    Y_new <- rbinom(n_packs, size=1, prob=prob_event)
+    Yname <- paste0("Y", time_point)
+
+    dat %>% 
+      bind_cols(tibble(
+        !!Yname := Y_new))
+}
+
+
+
+```
+
+
