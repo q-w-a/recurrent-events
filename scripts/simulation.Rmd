@@ -269,7 +269,11 @@ run_simulation <- function(years, n_packs, intervention=NULL) {
 
 ```{r}
 
+set.seed(123)
+
 current_dat <- run_simulation(years=5, n_packs=50)
+
+saveRDS(current_dat, here("data/sim_dat.RDS"))
 
 colMeans(current_dat %>% select(contains("Y")))
 
@@ -280,6 +284,13 @@ colMeans(current_dat %>% select(contains("Y")))
 # Generate Counterfactuals
 
 ```{r}
+
+# no treatment
+d_identity <- function(x,y) {
+  return(tibble(A1=x,
+                A2=y))
+}
+
 
 # no treatment
 d_no_treat <- function(x,y) {
@@ -298,6 +309,13 @@ d_dose_1_delay <- function(x,y) {
   return(tibble(A1=rep(1, length(x)),
                 A2 = rep(1, length(x))))
 }
+
+# shift dose up 
+d_shift_dose_up <- function(x,y) {
+  return(tibble(A1=x+1,
+                A2 = y))
+}
+
 
 get_counterfactual_mean <- function(years, n_packs, intervention) {
   
@@ -319,9 +337,9 @@ get_counterfactual_mean <- function(years, n_packs, intervention) {
 
 ```
 
-```{r calculate-counterfactual-means}
+```{r calculate-counterfactual-means,eval=FALSE}
 
-N_PACKS <- 1000 
+N_PACKS <- 1e5 
 N_YEARS <- 5 
 
 mean_no_treat <- get_counterfactual_mean(
@@ -339,9 +357,47 @@ mean_treat_delay <- get_counterfactual_mean(
   n_packs = N_PACKS,
   intervention = d_dose_1_delay)
 
+mean_shift_treatment_up <- get_counterfactual_mean(
+  years = N_YEARS,
+  n_packs = N_PACKS,
+  intervention = d_shift_dose_up)
+
+# mean (no change)
+mean_no_change <- get_counterfactual_mean(
+  years = N_YEARS,
+  n_packs = N_PACKS,
+  intervention = d_identity)
+
+
 mean_no_treat
 mean_treat_no_delay
 mean_treat_delay
+mean_shift_treatment_up
+mean_no_change
+
+truth <- list(mean_no_treat=mean_no_treat,
+              mean_treat_no_delay=mean_treat_no_delay,
+              mean_treat_delay=mean_treat_delay,
+              mean_shift_treatment_up=mean_shift_treatment_up,
+              mean_no_change=mean_no_change)
+
+saveRDS(truth, here::here('data/truth_from_counterfactuals.RDS'))
+
+```
+
+## True Treatment Effects
+
+```{r,results='asis'}
+
+truth <- readRDS(here::here('data/truth_from_counterfactuals.RDS'))
+
+cat("* True shift effect:", 
+    truth$mean_shift_treatment_up-truth$mean_no_change)
+cat("* True treatment effect (no delay):",
+    truth$mean_treat_no_delay-truth$mean_no_treat)
+cat("* True treatment effect (with delay):", 
+    truth$mean_treat_delay-truth$mean_no_treat)
+
 
 ```
 
