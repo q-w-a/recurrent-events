@@ -11,7 +11,7 @@ knit: (function(input,...) {
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE,error=TRUE, warning=FALSE,message=FALSE)
 
 
 library(tidyverse)
@@ -65,16 +65,19 @@ We use the `lmtp` R package, which has extensive documentation [here](https://be
 ```{r}
 
 dat <- readRDS(here("data/sim_dat.RDS")) 
+# readr::write_csv(dat, "data/sim_dat.csv")
 
 
 learners <- c(
-  #"SL.glm",        # logistic regression anchor
-  "SL.glmnet",     # lasso / elastic net
- # "SL.gam",        # smooth nonlinearities
+   "SL.glm",        # logistic regression anchor
+ # "SL.glmnet",     # lasso / elastic net
+ # "SL.bayesglm",
+  # "SL.gam",        # smooth nonlinearities
   "SL.ranger",     # random forest
   "SL.xgboost",     # boosted trees 
   "SL.mean"
 )
+
 
 
 treat_names <- dat %>%
@@ -110,7 +113,7 @@ dat_w_outcome <- dat %>%
 ```
 
 
-```{r}
+```{r no-treat}
 
 d_no_treat <- function(data, a) {
   d1 <- \(x) rep(0, length(x))
@@ -124,11 +127,12 @@ d_no_treat <- function(data, a) {
   setNames(out, a)
 }
 
-model <- lmtp_tmle(data = dat_w_outcome, 
+set.seed(123)
+
+model_no_treat <- lmtp_tmle(data = dat_w_outcome, 
                  trt = treat_names_list, 
                  outcome = "Y_sum", 
                  time_vary = time_var_pred,
-                # baseline = c("L0"),
                  shift = d_no_treat, 
                  mtp = FALSE,
                  outcome_type = "continuous",
@@ -136,9 +140,11 @@ model <- lmtp_tmle(data = dat_w_outcome,
                  learners_outcome = learners, 
                  folds = 1)
 
-saveRDS(model, here('data/model_no_treat.RDS'))
+saveRDS(model_no_treat, here('data/model_no_treat.RDS'))
 
+```
 
+```{r,eval=FALSE}
 
 model <- lmtp_tmle(data = dat_w_outcome, 
                  trt = treat_names_list, 
@@ -157,9 +163,7 @@ model <- lmtp_tmle(data = dat_w_outcome,
 
 ```
 
-
-
-```{r}
+```{r,eval=FALSE}
 
 d_no_treat <- function(data, a) {
   d1 <- \(x) rep(0, length(x))
@@ -194,21 +198,28 @@ saveRDS(model, here('data/model_no_treat.RDS'))
 ```{r treat-no-delay}
 
 d_treat_no_delay <- function(data, a) {
-  d1 <- \(x) rep(1, length(x))
+  # d1 <- \(x) rep(1, length(x))
   d2 <- \(x) rep(0, length(x))
 
+  y_prev <- gsub("_.+$", "", a[1])
+  y_prev <- gsub("A", "", y_prev)
+  y_prev <- paste0("Y", y_prev)
+  
+  d1 <- \(x) ifelse(y_prev==1, rep(1,length(y_prev)), 0)
+
+
   out <- list(
-    d1(data[[a[1]]]),
-    d2(data[[a[2]]])
+    d1(data[[y_prev]]),
+    d2(data[[y_prev]])
   )
   
   setNames(out, a)
 }
 
-model <- lmtp_tmle(data = dat, 
+model_treat_no_delay <- lmtp_tmle(data = dat_w_outcome, 
                  trt = treat_names_list, 
                  outcome = "Y_sum", 
-                 time_vary = L_list,
+                 time_vary = time_var_pred,
                  shift = d_treat_no_delay, 
                  mtp = FALSE,
                  outcome_type = "continuous",
@@ -216,7 +227,7 @@ model <- lmtp_tmle(data = dat,
                  learners_outcome = learners, 
                  folds = 1)
 
-saveRDS(model, here('data/model_treat_no_delay.RDS'))
+saveRDS(model_treat_no_delay, here('data/model_treat_no_delay.RDS'))
 
 
 
@@ -239,10 +250,10 @@ d_treat_delay <- function(data, a) {
 
 # maybe include Y1 as part of L? think about this more
 
-model <- lmtp_tmle(data = dat, 
+model_treat_delay <- lmtp_tmle(data = dat_w_outcome, 
                  trt = treat_names_list, 
                  outcome = "Y_sum", 
-                 time_vary = L_list,
+                 time_vary = time_var_pred,
                  shift = d_treat_delay, 
                  mtp = FALSE,
                  outcome_type = "continuous",
@@ -250,7 +261,7 @@ model <- lmtp_tmle(data = dat,
                  learners_outcome = learners, 
                  folds = 1)
 
-saveRDS(model, here('data/model_treat_delay.RDS'))
+saveRDS(model_treat_delay, here('data/model_treat_delay.RDS'))
 
 
 
@@ -261,10 +272,17 @@ saveRDS(model, here('data/model_treat_delay.RDS'))
 
 
 
-```{r}
+```{r,eval=FALSE}
 
+# compare 
+model_no_treat <- readRDS(here('data/model_no_treat.RDS'))
+model_treat_no_delay <- readRDS(here('data/model_treat_no_delay.RDS'))
+model_treat_delay <- readRDS(here('data/model_treat_delay.RDS'))
 
-lmtp_contrast(type = "rr")
+# effect of treatment with delay compard to treatment without delay 
+lmtp_contrast(model_treat_delay,
+              ref=model_treat_no_delay, 
+              type = "rr")
 
 
 ```

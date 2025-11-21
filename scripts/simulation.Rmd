@@ -122,7 +122,7 @@ get_treatment_at_k <- function(time_point, dat, n_packs,
                 # multiplying by another bernoulli to make zero more probable
                 prob=prob_treat*rbinom(n_packs,
                                        size=1,
-                                       prob=.7))
+                                       prob=.8))
   
   A11 <- ifelse(Y_prev == 0, 0, A11)
   
@@ -130,7 +130,7 @@ get_treatment_at_k <- function(time_point, dat, n_packs,
                 prob=.5*ifelse(A11 > 0, 1, 0))
   
   if (!is.null(intervention)) {
-    assigned <- intervention(A11, A12)
+    assigned <- intervention(A11, A12, Y_prev)
     A11 <- assigned %>% pull(A1)
     A12 <- assigned %>% pull(A2)
   }
@@ -169,7 +169,9 @@ get_outcome_at_k <- function(time_point, dat, n_packs, lambda_0=10) {
     #    )*(.7^A1_prev)*(1.4^A2_prev)
     
     prob_event <- plogis(
-      -2.9 +
+      #-2.9 +
+      #-2 +
+      -.5 +
         # more likely to kill if killed before 
         .4*ifelse(Y_prev==1, 1.1, 1)*(L_prev/sqrt(lambda_0)) 
          - .2*A1_prev*ifelse(A2_prev==1, 0, 1)
@@ -242,7 +244,8 @@ run_simulation <- function(years, n_packs, intervention=NULL) {
   L0 <- rpois(n_packs, lambda_0)
   
   # first depredation event
-  prob_event <- plogis(-4 + .3*(L0)/sqrt(lambda_0)) 
+  # prob_event <- plogis(-4 + .3*(L0)/sqrt(lambda_0)) 
+  prob_event <- plogis(-1.5 + .3*(L0)/sqrt(lambda_0)) 
 
   # prob_event <- plogis(-2 + 2*scale(L0)) 
   
@@ -276,9 +279,11 @@ run_simulation <- function(years, n_packs, intervention=NULL) {
 
 ```{r}
 
+N_YEARS <- 4
+
 set.seed(123)
 
-current_dat <- run_simulation(years=5, n_packs=50)
+current_dat <- run_simulation(years=N_YEARS, n_packs=100)
 
 saveRDS(current_dat, here("data/sim_dat.RDS"))
 
@@ -293,35 +298,36 @@ colMeans(current_dat %>% select(contains("Y")))
 ```{r}
 
 # no treatment
-d_identity <- function(x,y) {
+d_identity <- function(x,y,z) {
   return(tibble(A1=x,
                 A2=y))
 }
 
 # no treatment
-d_no_treat <- function(x,y) {
+d_no_treat <- function(x,y,z) {
   return(tibble(A1=rep(0, length(x)),
                 A2 = rep(0, length(x))))
 }
 
-# 1 wolf is killed, no delay 
-d_dose_1_no_delay <- function(x,y) {
-  return(tibble(A1=rep(1, length(x)),
-                A2 = rep(0, length(x))))
-}
-
-# 1 wolf is killed, with delay 
-d_dose_1_delay <- function(x,y) {
-  return(tibble(A1=rep(1, length(x)),
-                A2 = rep(1, length(x))))
-}
-
-# shift dose up 
-d_shift_dose_up <- function(x,y) {
-  return(tibble(A1=x+1,
+# 1 more wolf is killed, no change in delay 
+d_add_dose <- function(x,y,z) {
+  return(tibble(A1=ifelse(z==1, x+1,x),
                 A2 = y))
 }
 
+
+# number of wolves killed the same, change all to delay
+d_delay <- function(x,y,z) {
+  return(tibble(A1=x,
+                A2 = ifelse(z==1, 1, y)))
+}
+
+
+# number of wolves killed the same, change all to delay
+d_no_delay <- function(x,y,z) {
+  return(tibble(A1=x,
+                A2 = ifelse(z==1, 0, y)))
+}
 
 get_counterfactual_mean <- function(years, n_packs, intervention) {
   
@@ -343,30 +349,42 @@ get_counterfactual_mean <- function(years, n_packs, intervention) {
 
 ```
 
+```{r,eval=FALSE}
+# 1 more wolf is killed, with delay 
+d_dose_1_delay <- function(x,y) {
+  return(tibble(A1=rep(1, length(x)),
+                A2 = rep(1, length(x))))
+}
+
+# shift dose up 
+# d_shift_dose_up <- function(x,y) {
+#   return(tibble(A1=x+1,
+#                 A2 = y))
+# }
+
+
+
+
+```
+
 ```{r calculate-counterfactual-means}
 
 N_PACKS <- 1e5 
-N_YEARS <- 5 
 
-mean_no_treat <- get_counterfactual_mean(
+mean_add_dose <- get_counterfactual_mean(
   years = N_YEARS,
   n_packs = N_PACKS,
-  intervention = d_no_treat)
+  intervention = d_add_dose)
   
-mean_treat_no_delay <- get_counterfactual_mean(
+mean_delay <- get_counterfactual_mean(
   years = N_YEARS,
   n_packs = N_PACKS,
-  intervention = d_dose_1_no_delay)
+  intervention = d_delay)
 
-mean_treat_delay <- get_counterfactual_mean(
+mean_no_delay <- get_counterfactual_mean(
   years = N_YEARS,
   n_packs = N_PACKS,
-  intervention = d_dose_1_delay)
-
-mean_shift_treatment_up <- get_counterfactual_mean(
-  years = N_YEARS,
-  n_packs = N_PACKS,
-  intervention = d_shift_dose_up)
+  intervention = d_no_delay)
 
 # mean (no change)
 mean_no_change <- get_counterfactual_mean(
@@ -375,9 +393,11 @@ mean_no_change <- get_counterfactual_mean(
   intervention = d_identity)
 
 
-mean_no_treat
-mean_treat_no_delay
-mean_treat_delay
+mean_no_change
+mean_add_dose
+mean_add_dose-mean_no_change
+mean_delay-mean_no_delay
+
 mean_shift_treatment_up
 mean_no_change
 
@@ -450,7 +470,34 @@ current_dat %>%
 
 ```
 
+
+
 ## Wolves Removed Among the Treated
+
+
+```{r}
+
+counts_of_treatment_among_events <- map_df(1:A_length, ~{
+  dat <- current_dat %>%
+    select(all_of(c( paste0("A", .x, "_1"), 
+                     paste0("A", .x, "_2"),
+                     paste0("Y", .x)))) %>%
+             group_by(across(everything())) %>%
+             summarize(n=n()) %>%
+             filter(!if_all(-n,~ .x==0)) %>%
+    mutate(time_point=.x)
+  colnames(dat) <- c("A1", "A2", "Y", "n", "time_point")
+  return(dat)
+}) 
+
+counts_of_treatment_among_events %>%
+  mutate(A2=factor(A2)) %>%
+  ggplot(aes(x=A1, y=n, fill=A2)) +
+  geom_bar(stat="identity", position="dodge") +
+  facet_wrap(~time_point)
+
+```
+
 
 ```{r}
 
@@ -476,6 +523,34 @@ counts_of_treatment_among_events %>%
   facet_wrap(~time_point) +
   labs(x="Wolves Removed",
        title="Wolves Removed Among Those with an Event",
+       y="Count") +
+  theme_c() 
+
+
+
+```
+
+```{r}
+
+counts_of_treatment_among_events <- map_df(1:A_length, ~{
+  dat <- current_dat %>%
+    select(all_of(c( paste0("A", .x, "_2"), 
+                     paste0("Y", .x)))) %>%
+             group_by(across(everything())) %>%
+             summarize(n=n()) %>%
+             filter(!if_all(-n,~ .x==0)) %>%
+    mutate(time_point=.x)
+  colnames(dat) <- c("A", "Y", "n", "time_point")
+  return(dat)
+})
+
+
+counts_of_treatment_among_events %>%
+  ggplot(aes(x=A, y= n)) +
+  geom_bar(stat="identity") +
+  facet_wrap(~time_point) +
+  labs(x="Wolves Removed",
+       title="Of Instances Where Wolves Were Removed,\nPresence of Delay",
        y="Count") +
   theme_c() 
 
