@@ -14,7 +14,7 @@ knit: (function(input,...) {
 knitr::opts_chunk$set(echo = TRUE,message=FALSE, warning=FALSE)
 
 library(tidyverse)
-
+library(here)
 theme_c <- function(...){ 
    # font <- "Helvetica"   #assign font family up front
   #  font <- "Arial"
@@ -232,7 +232,7 @@ for (i in 1:K) {
 run_simulation <- function(years, n_packs, intervention=NULL) {
   
   YEARS <- years
-  K <- (YEARS*12)/2
+  K <- (YEARS*12)/6
   
   #----------------------------------------------------------------
   # Baseline covariates: number of wolves in pack at study start 
@@ -260,6 +260,13 @@ run_simulation <- function(years, n_packs, intervention=NULL) {
     current_dat <- get_outcome_at_k(i+1, current_dat, n_packs)
   }
   
+ # cat("here")
+  
+  current_dat <- get_treatment_at_k(K+1, current_dat,
+                                      n_packs,
+                                      intervention=intervention)
+  #current_dat <- get_L_at_k(K+1, current_dat, n_packs)
+
   return(current_dat)
 
 }
@@ -291,7 +298,6 @@ d_identity <- function(x,y) {
                 A2=y))
 }
 
-
 # no treatment
 d_no_treat <- function(x,y) {
   return(tibble(A1=rep(0, length(x)),
@@ -320,8 +326,8 @@ d_shift_dose_up <- function(x,y) {
 get_counterfactual_mean <- function(years, n_packs, intervention) {
   
   dat <- run_simulation(
-    years=N_YEARS, 
-    n_packs=N_PACKS, 
+    years=years, 
+    n_packs=n_packs, 
     intervention = intervention) 
 
   counterfactual_mean <- dat %>%
@@ -337,7 +343,7 @@ get_counterfactual_mean <- function(years, n_packs, intervention) {
 
 ```
 
-```{r calculate-counterfactual-means,eval=FALSE}
+```{r calculate-counterfactual-means}
 
 N_PACKS <- 1e5 
 N_YEARS <- 5 

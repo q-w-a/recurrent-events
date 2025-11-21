@@ -64,22 +64,16 @@ We use the `lmtp` R package, which has extensive documentation [here](https://be
 
 ```{r}
 
-dat <- readRDS(here("data/sim_dat.RDS")) %>%
-  rowwise() %>%
-  mutate(Y_sum = sum(c_across(starts_with("Y")), 
-                     na.rm = TRUE)) %>%
-  ungroup() %>%
-  mutate(A0_1 = 0,
-         A0_2 = 0)
-  
+dat <- readRDS(here("data/sim_dat.RDS")) 
 
 
 learners <- c(
-  "SL.glm",        # logistic regression anchor
+  #"SL.glm",        # logistic regression anchor
   "SL.glmnet",     # lasso / elastic net
-  "SL.gam",        # smooth nonlinearities
+ # "SL.gam",        # smooth nonlinearities
   "SL.ranger",     # random forest
-  "SL.xgboost"     # boosted trees (if installed)
+  "SL.xgboost",     # boosted trees 
+  "SL.mean"
 )
 
 
@@ -87,14 +81,40 @@ treat_names <- dat %>%
   select(contains("A")) %>%
   colnames()
 
-list_treat_names <- map(seq(1, length(treat_names), by=2), ~{
+treat_names_list <- map(seq(1, length(treat_names), by=2), ~{
   c(treat_names[.x], treat_names[.x+1])
 })
 
+L_list <- dat %>%
+  select(contains("Y")) %>%
+  colnames() %>%
+  as.list()
+
+Y_vars <- paste0("Y", 1:length(treat_names_list))
+L_vars <- paste0("L", (1:length(treat_names_list) - 1))
+
+time_var_pred <- map2(Y_vars,L_vars, ~{c(.x,.y)})
+
+# L_list[[1]] <- c("Y1", "L0")
+
+length(L_list)
+length(treat_names_list)
+
+
+dat_w_outcome <- dat %>%
+  rowwise() %>%
+  mutate(Y_sum = sum(c_across(starts_with("Y")), 
+                     na.rm = TRUE)) %>%
+  ungroup()  
+
+```
+
+
+```{r}
 
 d_no_treat <- function(data, a) {
-  d1 <- \(x) 0
-  d2 <- \(x) 0
+  d1 <- \(x) rep(0, length(x))
+  d2 <- \(x) rep(0, length(x))
 
   out <- list(
     d1(data[[a[1]]]),
@@ -104,22 +124,147 @@ d_no_treat <- function(data, a) {
   setNames(out, a)
 }
 
-L_list <- dat %>%
-  select(contains("L")) %>%
-  colnames() %>%
-  as.list()
-
-model <- lmtp_tmle(data = dat, 
-                 trt = list_treat_names, 
+model <- lmtp_tmle(data = dat_w_outcome, 
+                 trt = treat_names_list, 
                  outcome = "Y_sum", 
-                 time_vary = L_list,
+                 time_vary = time_var_pred,
+                # baseline = c("L0"),
                  shift = d_no_treat, 
                  mtp = FALSE,
                  outcome_type = "continuous",
                  learners_trt = learners, 
                  learners_outcome = learners, 
-                 folds = 10)
+                 folds = 1)
 
+saveRDS(model, here('data/model_no_treat.RDS'))
+
+
+
+model <- lmtp_tmle(data = dat_w_outcome, 
+                 trt = treat_names_list, 
+                 outcome = "Y_sum", 
+                 time_vary = time_var_pred,
+                 shift = d_treat_no_delay, 
+                 mtp = FALSE,
+                 outcome_type = "continuous",
+                 learners_trt = learners, 
+                 learners_outcome = learners, 
+                 folds = 1)
+
+
+
+# lmtp_contrast(fit_dtr, fit_MR, ref = fit_CD)
+
+```
+
+
+
+```{r}
+
+d_no_treat <- function(data, a) {
+  d1 <- \(x) rep(0, length(x))
+  d2 <- \(x) rep(0, length(x))
+
+  out <- list(
+    d1(data[[a[1]]]),
+    d2(data[[a[2]]])
+  )
+  
+  setNames(out, a)
+}
+
+model <- lmtp_tmle(data = dat_w_outcome, 
+                 trt = treat_names_list, 
+                 outcome = "Y_sum", 
+                 time_vary = L_list,
+                # baseline = c("L0"),
+                 shift = d_no_treat, 
+                 mtp = FALSE,
+                 outcome_type = "continuous",
+                 learners_trt = learners, 
+                 learners_outcome = learners, 
+                 folds = 1)
+
+saveRDS(model, here('data/model_no_treat.RDS'))
+
+# lmtp_contrast(fit_dtr, fit_MR, ref = fit_CD)
+
+```
+
+```{r treat-no-delay}
+
+d_treat_no_delay <- function(data, a) {
+  d1 <- \(x) rep(1, length(x))
+  d2 <- \(x) rep(0, length(x))
+
+  out <- list(
+    d1(data[[a[1]]]),
+    d2(data[[a[2]]])
+  )
+  
+  setNames(out, a)
+}
+
+model <- lmtp_tmle(data = dat, 
+                 trt = treat_names_list, 
+                 outcome = "Y_sum", 
+                 time_vary = L_list,
+                 shift = d_treat_no_delay, 
+                 mtp = FALSE,
+                 outcome_type = "continuous",
+                 learners_trt = learners, 
+                 learners_outcome = learners, 
+                 folds = 1)
+
+saveRDS(model, here('data/model_treat_no_delay.RDS'))
+
+
+
+```
+
+
+```{r treat-delay}
+
+d_treat_delay <- function(data, a) {
+  d1 <- \(x) rep(1, length(x))
+  d2 <- \(x) rep(1, length(x))
+
+  out <- list(
+    d1(data[[a[1]]]),
+    d2(data[[a[2]]])
+  )
+  
+  setNames(out, a)
+}
+
+# maybe include Y1 as part of L? think about this more
+
+model <- lmtp_tmle(data = dat, 
+                 trt = treat_names_list, 
+                 outcome = "Y_sum", 
+                 time_vary = L_list,
+                 shift = d_treat_delay, 
+                 mtp = FALSE,
+                 outcome_type = "continuous",
+                 learners_trt = learners, 
+                 learners_outcome = learners, 
+                 folds = 1)
+
+saveRDS(model, here('data/model_treat_delay.RDS'))
+
+
+
+```
+
+
+# Contrasts
+
+
+
+```{r}
+
+
+lmtp_contrast(type = "rr")
 
 
 ```
