@@ -1,0 +1,1208 @@
+---
+title: "Simulation"
+author: "Quinn White"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    code_folding: hide 
+    toc: true
+knit: (function(input,...) {
+  rmarkdown::render(input,output_dir=here::here("output"))})
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,message=FALSE, warning=FALSE)
+
+library(tidyverse)
+library(here)
+theme_c <- function(...){ 
+   # font <- "Helvetica"   #assign font family up front
+  #  font <- "Arial"
+    theme_bw() %+replace%    #replace elements we want to change
+    
+    theme(
+      
+      #text elements
+      plot.title = element_text(             #title
+                 #  family = font,            #set font family
+                   size = 11,                #set font size
+                   face = 'bold',            #bold typeface
+                   hjust = .5,
+                   vjust = 3),               
+      
+      plot.subtitle = element_text(          #subtitle
+                #   family = font,            #font family
+                   size = 10,
+                   hjust = .5,
+                   face = 'italic',
+                   vjust = 3),               #font size
+      
+      axis.title = element_text(             #axis titles
+                #   family = font,            #font family
+                   size = 10),               #font size
+      
+      axis.text = element_text(              #axis text
+                #   family = font,            #axis famuly
+                   size = 8),
+      strip.text = element_text(color="white", size = 9,
+                                margin=unit(c(.1,.1,.1,.1), 'cm')),
+      strip.background = element_rect(fill = "#363636"),
+      # t, r, b, l
+      plot.margin = unit(c(1,.5,.5,.5), "cm")
+      ) %+replace%
+      theme(...)
+   
+}
+
+
+```
+
+# Set-Up 
+
+
+```{r,eval=FALSE, include=FALSE}
+
+Need to discretize time such that positivity holds but such that we only have one event... Perhaps think about this more  
+
+let Y_k be # depredation events in interval
+describe that we must pick coarsening scheme such that 
+
+```
+
+
+```{r simulation-functions}
+
+get_X_at_k <- function(time_point, dat, n_packs) {
+  # L_{k-1}
+  X_prev <- dat %>% pull(paste0("X", time_point-1))
+  # A_{k}
+  A1_prev <- dat %>% pull(paste0("A", time_point-1, "_1"))
+  # Y_{k} 
+  Y_prev <- dat %>% pull(paste0("Y", time_point-1))
+  
+  # wolves previously - wolves killed + term (adding or subtracting one)
+  # accounting for death/birth
+  # more likely to be birth if Y_prev was 1 (well fed)
+  # term accounting for death/birth more likely to be positive 
+  
+  prob_birth <- ifelse(Y_prev == 1, .7, .5)
+  
+  X_new <- X_prev - A1_prev + 2*rbinom(n_packs, size=1, prob_birth) - 1
+  
+  # if pack is less than 3 already, only stay the same or grow 
+  X_new <- ifelse(X_new <= 3, X_prev + 
+                  rbinom(n_packs, size=1, prob=.5), 
+                  X_new)
+
+  Xname <- paste0("X", time_point)
+  
+  return(dat %>% 
+           bind_cols(tibble(!!Xname := X_new))
+         )
+}
+
+
+
+get_outcome_at_k <- function(time_point, dat, n_packs,
+                             interval_length, 
+                             lambda_0=10) {
+  
+    # Y_{k-1}
+    Y_prev <- dat %>% pull(paste0("Y", time_point-1))
+    
+    # X_k
+    X_prev <- dat %>% pull(paste0("X", time_point))
+    
+     # W_k
+    W_prev <- dat %>% pull(paste0("W", time_point))
+    
+    # most recent wolf removal 
+    most_recent_treatment <- dat %>% 
+      mutate(most_recent = ifelse(
+      rowSums(select(., matches("A*_1"))) == 0,
+           0, max.col(select(., matches("A*_1")),
+                      ties.method="last"))) %>%
+      pull(most_recent)
+    
+    A1_prev <- ifelse(most_recent_treatment==0, 0, 1)
+    
+    # most recent wolf removal 
+    most_recent_depredation_event <- dat %>% 
+      mutate(most_recent = ifelse(
+      rowSums(select(., matches("Y"))) == 0,
+           0, max.col(select(., matches("Y")),
+                      ties.method="last"))) %>%
+      pull(most_recent)
+      
+    delay <- ifelse(most_recent_treatment > most_recent_depredation_event, 
+                    most_recent_treatment-most_recent_depredation_event +
+                    (time_point - most_recent_treatment),
+                    0) 
+    
+    A2_prev <- delay
+    # A_{(k-1),1}
+    # A1_prev <- dat %>% pull(paste0("A", time_point-1, "_", 1))
+    
+    # A_{(k-1),1}
+    # categorized delay
+    # A2_prev <- dat %>% pull(paste0("A", time_point-1, "_", 2))
+    
+    # indicator of wolf removed being breeding female  
+    A3_prev <- dat %>% pull(paste0("A", time_point-1, "_", 3))
+
+    # prob_event <- plogis(
+    #   -3.5 +
+    #     # more likely to kill if killed before 
+    #     .5*ifelse(Y_prev==1, 2, 1)*(L_prev/sqrt(lambda_0)) 
+    #     # less likely to kill if lost pack members to intervention
+    #     # but this affect is attenuated if there was a treatment delay
+    #    )*(.7^A1_prev)*(1.4^A2_prev)
+    
+    A2_effect <- case_when(A2_prev == 0  ~ 0,
+                           A2_prev <= 14 ~ 7,
+                           A2_prev > 14 & A2_prev <= 30  ~ 4,
+                           A2_prev > 30 & A2_prev <= 120 ~ 1,
+                           A2_prev > 120 ~ 0)
+    
+    prob_event <- plogis(
+      #-2.9 +
+      #-2 +
+      (3 + 
+        #bigger pack -> more mouths to feed
+        2.7*(X_prev/sqrt(lambda_0))
+        # more likely to kill if killed before 
+        +2*ifelse(Y_prev==1, 1.1, 1)  
+        # behavioral effect - stronger effect if delay is small 
+        - 8 * A1_prev*A2_effect
+        - 5 * W_prev +
+        # less likely if take out breeding female
+        - 10 * A3_prev )
+        * .05 )*(plogis(interval_length)^8)
+    
+     
+    # p <- tibble(x=prob_event/(plogis(interval_length)^8)) %>% 
+    #   ggplot(aes(x=x)) +
+    #   geom_histogram()
+    # print(p)
+    # 
+    
+    
+    # tibble(x=prob_event) %>% ggplot(aes(x=x))+geom_histogram()
+
+    Y_new <- rbinom(n_packs, size=1, prob=prob_event)
+    Yname <- paste0("Y", time_point)
+
+    dat %>% 
+      bind_cols(tibble(
+        !!Yname := Y_new))
+}
+
+# assumes time point is in weeks 
+get_W_at_k <- function(time_point, dat, n_packs, interval_length) {
+  week <- time_point*interval_length
+  if(time_point*interval_length >= 52)  {
+    week <- time_point*interval_length - 52
+  } 
+  if(week < 8 | week > 12*4){
+    W <- rep(1, nrow(dat))
+  } else {
+    W <- rep(0, nrow(dat))
+  }
+    Wname <- paste0("W", time_point)
+    
+    dat %>% bind_cols(tibble(!!Wname := W))
+  
+}
+
+# adds treatments Ak_1, Ak_2, Ak_3 to input data frame dat 
+get_treatment_at_k <- function(time_point, dat, n_packs,
+                               interval_length=8,
+                               intervention=NULL,
+                               lambda_0=10,
+                               poach_harvest_only=TRUE) {
+  
+  # X_{k}, Y_{k}
+  X_prev <- dat %>% pull(paste0("X", time_point))
+  Y_prev <- dat %>% pull(paste0("Y", time_point))
+  W_prev <- dat %>% pull(paste0("W", time_point))
+  # P_prev <- dat %>% pull(paste0("P", time_point))
+
+  # prob_treat <- plogis(-1+ 1*scale(L_prev)) 
+  
+  # hist(prob_treat)
+ 
+  if(!poach_harvest_only){
+    prob_treat <- plogis(-6.5 + 2*Y_prev + .7*(X_prev)/sqrt(lambda_0) 
+                         - .5* W_prev
+                           # +rnorm(n_packs,0,3)
+                         )*(plogis(interval_length)^(7))
+  } else{
+      prob_treat <- plogis(-6 +.7*(X_prev)/sqrt(lambda_0) 
+                           - .5* W_prev  
+                            # + rnorm(n_packs,0,3)
+                           )*(plogis(interval_length)^(7))
+  }
+  
+  # cat(paste(signif(range(prob_treat), 3)), "\n")
+   
+  A11 <- rbinom(n_packs, 
+                size=1, 
+                prob=prob_treat)
+  
+
+    
+  # A11 <- ifelse(A11 | P_prev, 1, 0)
+  
+  # breeding female = 2/pack_size (larger for smaller packs)
+  # prob = 0 if A11=0
+  A13 <-rbinom(n_packs, prob= ( 1/(.7*X_prev))*A11, size =1) 
+  
+  if (!is.null(intervention)) {
+      assigned <- intervention(dat, time_point)
+      A11 <- assigned %>% pull(A1)
+      A13 <- assigned %>% pull(A3)
+    }
+
+  
+  y_cols_to_check <- 1:time_point
+  
+  y_cols_to_check <- paste0("Y", y_cols_to_check)
+  
+      
+  # delay <- dat %>%
+  #   select(all_of(y_cols_to_check)) %>% 
+  #   mutate(most_recent = ifelse(
+  #     rowSums(select(., all_of(y_cols_to_check))) == 0,
+  #          0, max.col(select(., all_of(y_cols_to_check)),
+  #                     ties.method="last"))) %>% 
+  #   mutate(delay = time_point - most_recent) %>%
+  #   pull(delay)
+  # 
+  
+  # if no wolf was removed, set delay to "No treatment"  
+  # A12 <- ifelse(A11 > 0, delay, "No treatment")
+  # A12 <- ifelse(A11 > 0, delay, 0)
+
+  
+  name1 <- paste0("A", time_point, "_1")
+  #name2 <- paste0("A", time_point, "_2")
+  name3 <- paste0("A", time_point, "_3")
+
+  dat %>% 
+    bind_cols(tibble(
+      !!name1 := A11,
+      #!!name2 := A12,
+      !!name3 := A13))
+
+}
+
+#A2_possible_vals <- c("No treatment", "Delay <= 14",
+#                     "14 < Delay <= 30","Delay > 30")
+# breeding female Y/N
+A3_possible_vals <- c(1, 0)
+
+```
+
+
+```{r,eval=FALSE}
+
+# previous way to handle delay
+  # continuous delay 
+  if (time_point >= 3) {
+        Y_right_before <- dat %>% pull(paste0("Y", time_point))
+        Y_lag1 <- dat %>% pull(paste0("Y", time_point-1))
+        Y_lag2 <- dat %>% pull(paste0("Y", time_point-2))
+        recent_event <- bind_cols(Y_right_before=Y_right_before,
+                                  Y_lag1=Y_lag1,
+                                  Y_lag2=Y_lag2) %>%
+        rowwise() %>%
+        mutate(Y_sum = sum(c_across(starts_with("Y")), 
+                           na.rm = TRUE)) %>%
+        ungroup() %>%
+        mutate(prev_event = ifelse(Y_sum >0, 1, 0),
+               most_recent = case_when(
+                 Y_right_before == 1 ~ time_point,
+                 Y_lag1 == 1 ~ time_point - 1,
+                 Y_lag2 == 1 ~ time_point - 2,
+                 TRUE ~ 0
+               )) 
+  } else if (time_point == 2) {
+    Y_right_before <- dat %>% pull(paste0("Y", time_point))
+    Y_lag1 <- dat %>% pull(paste0("Y", time_point-1))
+    recent_event <- bind_cols(Y_right_before=Y_right_before,
+                              Y_lag1= Y_lag1) %>%
+        rowwise() %>%
+        mutate(Y_sum = sum(c_across(starts_with("Y")), 
+                           na.rm = TRUE)) %>%
+        ungroup() %>%
+        mutate(prev_event = ifelse(Y_sum >0, 1, 0),
+               most_recent = case_when(
+                 Y_right_before == 1 ~ time_point,
+                 Y_lag1 == 1 ~ time_point -1,
+                 TRUE ~ 0 
+               )) 
+  } else if (time_point == 1) {
+     Y_right_before <- Y_prev
+     recent_event <- bind_cols(Y_right_before = Y_right_before) %>%
+        mutate(prev_event = ifelse(Y_right_before > 0, 1, 0),
+               most_recent = ifelse(prev_event, 1, 0)
+               )
+  }
+  
+  
+  # delay set from time to enrollment if they didn't have an event 
+  delay <- recent_event %>%
+    mutate(delay = ifelse(prev_event,
+                          time_point-most_recent,
+                         runif(n_packs, 
+                                min = time_point,
+                                max = time_point*2))
+           # ,
+           # delay = case_when(
+           #   delay*7 < 14 ~ "Delay <= 14",
+           #   delay*7 > 14 & delay*7 < 30 ~ "14 < Delay <= 30",
+           #   delay*7 > 30 ~ "Delay > 30")
+           ) %>%
+    pull(delay)
+```
+
+
+# Simulate Data 
+
+```{r run-simulation}
+
+# for simplicity, suppose study start is in January 
+
+# need to coarsen time such that everyone has an event 
+
+# intervention must be a function that outputs A1, A2 (assigned treatments) 
+# takes in the natural value of treatment (so can be a shift intervention)
+run_simulation <- function(years=5, n_packs=30,
+                           interval_length=8, 
+                           intervention=NULL) {
+  
+  # 8 week intervals
+  K <- round((years*52)/interval_length)
+  
+  #----------------------------------------------------------------
+  # Baseline covariates: number of wolves in pack at study start 
+  #----------------------------------------------------------------
+  lambda_0 <- 10 
+  X1 <- rpois(n_packs, lambda_0)
+  # winter -> cows close to home -> safer 
+  W1 <- rep(1, n_packs)
+  
+  # first depredation event
+  # prob_event <- plogis(-4 + .3*(L0)/sqrt(lambda_0)) 
+  prob_event <- plogis(-2 + .3*(X1)/sqrt(lambda_0)) * plogis(interval_length)
+  Y1 <- rbinom(n_packs, size=1, prob=prob_event)
+  # P1 <- rbinom(n_packs, size=1, prob=.2)
+  
+  #current_dat <- bind_cols(X1=X1, Y1=Y1, W1=W1, P1=P1)
+  current_dat <- bind_cols(X1=X1, Y1=Y1, W1=W1)
+
+  for (i in 1:K) {
+    # cat("i=",i)
+    current_dat <- get_treatment_at_k(i, 
+                                      current_dat,
+                                      n_packs,
+                                      interval_length,
+                                      intervention=intervention)
+    # current_dat <- bind_cols(
+    #   current_dat, 
+    #   tibble(!!paste0("P", i+1):= rbinom(n_packs, size=1, prob=.2)))
+    # cat("get X")
+    # start here by updating 
+    # use something like 1/(1+delay)
+    current_dat <- get_X_at_k(i+1, current_dat, n_packs)
+    # cat("get W")
+    current_dat <- get_W_at_k(i+1, current_dat, n_packs, interval_length)
+    # cat("get outcome")
+    current_dat <- get_outcome_at_k(i+1, current_dat, n_packs, interval_length)
+  }
+  
+ # cat("here")
+  
+  current_dat <- get_treatment_at_k(K+1, current_dat,
+                                      n_packs,
+                                      intervention=intervention)
+
+  # incorporate right truncation
+  current_dat <- current_dat %>%
+    rowwise() %>%
+    mutate(Y_sum = sum(c_across(starts_with("Y")), 
+                       na.rm = TRUE)) %>%
+    ungroup() %>%
+    filter(Y_sum >0) %>%
+    select(-Y_sum)
+
+  return(current_dat)
+
+}
+
+
+```
+
+```{r,eval=FALSE}
+
+N_YEARS <- 5
+
+set.seed(123)
+current_dat <- run_simulation(years=N_YEARS, n_packs=55, interval_length=1/7) %>%
+  mutate(id = row_number())
+
+
+test <- current_dat %>%
+    rowwise() %>%
+    mutate(Y_sum = sum(c_across(starts_with("Y")), 
+                       na.rm = TRUE),
+              A_sum = sum(c_across(matches("A*_1")), 
+                       na.rm = TRUE)) 
+test %>%
+  ggplot(aes(x=Y_sum)) +
+  geom_histogram()
+
+test %>%
+  ggplot(aes(x=A_sum)) +
+  geom_histogram()
+
+# saveRDS(current_dat)
+
+```
+
+```{r bin-data,eval=FALSE}
+
+df_events <- current_dat %>% 
+  select(id,contains("Y")) %>%
+  pivot_longer(
+    cols = starts_with("Y"),
+    names_to = "time_point",
+    values_to = "event"
+  ) %>% 
+  # 2) Extract numeric time from "y1" -> 1, "y2" -> 2, ...
+  mutate(time_point = as.integer(str_extract(time_point, "\\d+"))) %>% 
+  # 3) Keep only time points where an event occurred
+  filter(event == 1) %>% 
+  arrange(id, time_point) %>% 
+  group_by(id) %>% 
+  # 4) Number the events for each patient
+  mutate(event_number = row_number(),
+         time_to_event = time_point) %>%  # or time_point * interval_length
+  ungroup()%>% 
+  group_by(id) %>% 
+  mutate(
+    gap_time = time_to_event - lag(time_to_event, default = 0)
+  ) %>% 
+  ungroup()
+
+interval_len <- 60
+
+n_intervals <- ceiling((current_dat %>% 
+  select(contains("Y")) %>% 
+  ncol())/interval_len)
+
+
+events_by_interval <- df_events %>%
+  mutate(
+    interval = ceiling(time_point / interval_len) 
+  ) %>%
+  group_by(id, interval) %>%
+  # sum of number of events in the interval 
+  summarise(
+    Y = as.integer(sum(event == 1)), 
+    .groups = "drop"
+  )
+
+events_wide <- events_by_interval %>%
+  group_by(id) %>%
+  complete(
+    interval = 1:n_intervals,
+    fill = list(Y = 0)
+  ) %>%
+  ungroup() %>%
+  pivot_wider(names_from=interval, values_from =Y,
+              names_prefix="Y")
+
+#------------------------
+# 
+wolf_removals <- current_dat %>% 
+  select(id,matches("A*_1")) %>%
+  pivot_longer(
+    cols = -id,
+    names_to = "time_point",
+    values_to = "event"
+  ) %>% 
+  # 2) Extract numeric time from "y1" -> 1, "y2" -> 2, ...
+  mutate(time_point = as.integer(str_extract(time_point, "\\d+"))) %>% 
+  # 3) Keep only time points where an event occurred
+  filter(event == 1) 
+
+treatment_by_interval <- wolf_removals %>%
+  mutate(
+    interval = ceiling(time_point / interval_len) 
+  ) %>%
+  group_by(id, interval) %>%
+  # sum of number of events in the interval 
+  summarise(
+    A = as.integer(any(event == 1)), 
+    .groups = "drop"
+  ) %>%
+  group_by(id) %>%
+  complete(
+    interval = 1:n_intervals,
+    fill = list(A = 0)
+  ) %>%
+  ungroup() %>%
+  pivot_wider(names_from=interval, values_from =A,
+              names_glue="A{interval}_1")
+
+
+
+# get A 
+
+
+
+
+# because truncation is part of DGP, no zeros 
+# df_zero_events <- tibble(
+#   id            = ids_no_event,
+#   event_number  = 0,
+#   time_to_event = NA_real_,
+#   gap_time      = NA_real_
+# )
+# 
+# df_events <- bind_rows(df_events, df_zero_events)
+
+df_events %>%
+  group_by(id) %>%
+  summarize(n=n()) %>%
+  ggplot(aes(x=n)) +
+  geom_histogram() +
+  scale_x_continuous(n.breaks=10)
+
+
+df_wolf_removals <- current_dat %>% 
+  select(matches("A*_1")) %>%
+  mutate(id = row_number()) %>%
+  pivot_longer(
+    cols = matches("A*_1"),
+    names_to = "time_point",
+    values_to = "event"
+  ) %>% 
+  # 2) Extract numeric time from "y1" -> 1, "y2" -> 2, ...
+  mutate(time_point = as.integer(str_extract(time_point, "\\d+"))) %>% 
+  # 3) Keep only time points where an event occurred
+  filter(event == 1) %>% 
+  arrange(id, time_point) %>% 
+  group_by(id) %>% 
+  # 4) Number the events for each patient
+  mutate(event_number = row_number(),
+         time_to_event = time_point) %>%  # or time_point * interval_length
+  ungroup()%>% 
+  group_by(id) %>% 
+  mutate(
+    gap_time = time_to_event - lag(time_to_event, default = 0)
+  ) %>% 
+  ungroup()
+
+df_wolf_removals %>%
+  group_by(id) %>%
+  summarize(n=n()) %>%
+  ggplot(aes(x=n)) +
+  geom_histogram()
+
+
+nrow(current_dat)
+
+# right_truncation 
+colMeans(current_dat %>% select(contains("Y")))
+saveRDS(current_dat, here("data/sim_dat.RDS"))
+
+
+
+```
+
+```{r,eval=FALSE}
+
+YEARS <- 5
+K <- (YEARS*12)/2
+
+#----------------------------------------------------------------
+# Baseline covariates: number of wolves in pack at study start 
+#----------------------------------------------------------------
+n_packs <- 30 
+lambda_0 <- 10 
+L0 <- rpois(n_packs, lambda_0)
+
+# first depredation event
+prob_event <- plogis(-2 + 2*scale(L0)) 
+
+# tibble(x=prob_event) %>%
+#   ggplot(aes(x=x)) + geom_histogram()
+
+Y1 <- rbinom(n_packs, size=1, prob=prob_event)
+current_dat <- bind_cols(L0=L0, Y1=Y1)
+
+
+for (i in 1:K) {
+  current_dat <- get_treatment_at_k(i, current_dat)
+  current_dat <- get_L_at_k(i, current_dat)
+  current_dat <- get_outcome_at_k(i+1, current_dat)
+}
+
+```
+
+  
+# Generate Counterfactuals
+
+
+```{r}
+
+get_counterfactual_mean <- function(years, n_packs, interval_length,
+                                    intervention, identity=FALSE
+                                    ) {
+  
+  dat <- run_simulation(
+    years=years, 
+    n_packs=n_packs, 
+    interval_length=interval_length,
+    intervention = intervention) 
+  
+  # if(identity) {
+  #   dat %>%
+  #   rowwise() %>%
+  #   mutate(Y_sum = sum(c_across(starts_with("Y")), 
+  #                      na.rm = TRUE)) %>%
+  #   pull(Y_sum) %>%
+  #   mean() %>%
+  #     return()
+  # }
+
+  counterfactual_mean <- dat %>%
+    rowwise() %>%
+    mutate(Y_sum = sum(c_across(starts_with("Y")), 
+                       na.rm = TRUE)) %>%
+    pull(Y_sum) %>%
+    mean()
+  
+  return(counterfactual_mean)
+}
+
+```
+
+
+```{r counterfactual-means-under-mtps}
+
+# always treat, no delay 
+d_always_treat_at_month <- function(dat, time_point) {
+  
+
+  if(time_point > 31) {
+     y_one_month_before <- dat %>% 
+       pull(paste0("Y", time_point-30))
+     A1_new = ifelse(y_one_month_before == 1, 1, 0)
+    
+
+  }
+  else if(time_point==31) {
+    
+    # if any events in first month, intervene at one month
+
+    y_one_month_before <- dat %>% 
+       select(all_of(paste0("Y", (1:(time_point-30))))) %>%
+      rowSums()
+    
+     A1_new = ifelse(y_one_month_before >=1, 1, 0)
+  } else {
+     A1_new = rep(0, nrow(dat))
+  }
+  
+  X_prev <- dat %>% pull(paste0("X", time_point))
+  A3_new <-rbinom(nrow(dat), prob= ( 1/(.7*X_prev))*A1_new, size =1) 
+
+  return(tibble(A1=A1_new,
+                A3 = A3_new))
+}
+d_always_treat_at_two_month <- function(dat, time_point) {
+  
+  if(time_point > 61) {
+     y_one_month_before <- dat %>% 
+       pull(paste0("Y", time_point-60))
+
+     A1_new = ifelse(y_one_month_before == 1, 1, 0)
+     
+  }
+  else if(time_point==61) {
+    
+    # if any events in first month, intervene at one month
+
+    y_one_month_before <- dat %>% 
+       select(all_of(paste0("Y", (1:(time_point-60))))) %>%
+      rowSums()
+    
+     A1_new = ifelse(y_one_month_before >=1, 1, 0)
+  } else {
+     A1_new = rep(0, nrow(dat))
+  }
+  
+  X_prev <- dat %>% pull(paste0("X", time_point))
+  A3_new <-rbinom(nrow(dat), prob= ( 1/(.7*X_prev))*A1_new, size =1) 
+
+  return(tibble(A1=A1_new,
+                A3 = A3_new))
+}
+d_never_treat <- function(dat, time_point) {
+ 
+  return(tibble(A1=rep(0, nrow(dat)),
+                A3 = rep(0, nrow(dat))))
+}
+
+N_YEARS <- 5
+N_PACKS <- 1000 
+
+mean_treat_at_month <- get_counterfactual_mean(
+  years = N_YEARS,
+  n_packs = N_PACKS,
+  intervention = d_always_treat_at_month,
+  interval_length=1/7)
+
+mean_treat_at_two_month <- get_counterfactual_mean(
+  years = N_YEARS,
+  n_packs = N_PACKS,
+  intervention = d_always_treat_at_two_month,
+  interval_length=1/7)
+
+mean_treat_at_month
+mean_treat_at_two_month
+mean_treat_at_month/mean_treat_at_two_month
+
+mean_never_treat <- get_counterfactual_mean(
+  years = N_YEARS,
+  n_packs = N_PACKS,
+  intervention = d_never_treat,
+  interval_length=1/7)
+
+mean_identity <- get_counterfactual_mean(
+  years = N_YEARS,
+  n_packs = N_PACKS,
+  intervention = NULL,
+  interval_length=1/7)
+
+truth <- list(mean_treat_at_month=mean_treat_at_month,
+              mean_treat_at_two_month=mean_treat_at_two_month,
+              mean_never_treat=mean_never_treat,
+              mean_identity=mean_identity)
+
+saveRDS(truth, here("data/truth.RDS"))
+
+```
+
+```{r,eval=FALSE}
+new <- run_simulation(
+    years=3, 
+    n_packs=50, 
+    interval_length=interval_length,
+    intervention = d_always_treat_at_month) %>%
+    rowwise() %>%
+    mutate(Y_sum = sum(c_across(starts_with("Y")), 
+                       na.rm = TRUE),
+              A_sum = sum(c_across(matches("A*_1")), 
+                       na.rm = TRUE)) 
+
+new2 <- run_simulation(
+    years=3, 
+    n_packs=50, 
+    interval_length=interval_length,
+    intervention = d_never_treat) %>%
+    rowwise() %>%
+    mutate(Y_sum = sum(c_across(starts_with("Y")), 
+                       na.rm = TRUE),
+           A_sum = sum(c_across(matches("A*_1")), 
+                       na.rm = TRUE)) 
+
+
+new2 <- run_simulation(
+    years=1, 
+    n_packs=50, 
+    interval_length=interval_length,
+    intervention = d_always_treat_at_two_month) %>%
+    rowwise() %>%
+    mutate(Y_sum = sum(c_across(starts_with("Y")), 
+                       na.rm = TRUE)) 
+new %>%
+  ggplot(aes(x=Y_sum))+
+  geom_histogram()
+
+new %>%
+  ggplot(aes(x=A_sum))+
+  geom_histogram()
+
+new2 %>%
+  ggplot(aes(x=Y_sum))+
+  geom_histogram()
+  
+new %>%
+  select(matches("A*_2")) %>%
+  pivot_longer(cols=everything()) %>%
+  filter(value>0) %>%
+  ggplot(aes(x=value))+
+  geom_histogram()
+
+
+
+
+new2 <- run_simulation(
+    years=1, 
+    n_packs=50, 
+    interval_length=interval_length,
+    intervention = d_always_treat_at_two_month) %>%
+    rowwise() %>%
+    mutate(Y_sum = sum(c_across(starts_with("Y")), 
+                       na.rm = TRUE)) 
+
+new3 <- run_simulation(
+    years=1, 
+    n_packs=50, 
+    interval_length=interval_length,
+    intervention = NULL) %>%
+    rowwise() %>%
+    mutate(Y_sum = sum(c_across(starts_with("Y")), 
+                       na.rm = TRUE)) 
+
+
+
+
+```
+
+```{r modified-treatment-policies,eval=FALSE}
+
+# no change 
+d_identity <- function(x,y,z,w) {
+  return(tibble(A1=x,
+                A2=y,
+                A3=z))
+}
+
+# no treatment
+d_no_treat <- function(x,y,z,w) {
+  return(tibble(A1=rep(0, length(x)),
+                A2 = rep("No treatment", length(x)),
+                A3 = z))
+}
+
+# FIXXXX
+# need to fix to set Ak =1 if Y_{k-14} =1 
+# wolf killed, no delay 
+d_kill_wolf_in_response <- function(x,y,z,w, time_point) {
+  
+  if (time_point)
+  return(tibble(A1=ifelse(w==1, 1, 0),
+                A2 =ifelse(w==1, "Delay <= 14", y),
+                A3 = z))
+}
+
+
+# number of wolves killed the same, change all to delay
+d_delay <- function(x,y,z) {
+  return(tibble(A1=x,
+                A2 = ifelse(z==1, 1, y)))
+}
+
+# number of wolves killed the same, change all to delay
+d_no_delay <- function(x,y,z) {
+  return(tibble(A1=x,
+                A2 = ifelse(z==1, 0, y)))
+}
+
+get_counterfactual_mean <- function(years, n_packs, interval_length,
+                                    intervention, identity=FALSE
+                                    ) {
+  
+  dat <- run_simulation(
+    years=years, 
+    n_packs=n_packs, 
+    interval_length=interval_length,
+    intervention = intervention) 
+  
+  # if(identity) {
+  #   dat %>%
+  #   rowwise() %>%
+  #   mutate(Y_sum = sum(c_across(starts_with("Y")), 
+  #                      na.rm = TRUE)) %>%
+  #   pull(Y_sum) %>%
+  #   mean() %>%
+  #     return()
+  # }
+
+  counterfactual_mean <- dat %>%
+    rowwise() %>%
+    mutate(Y_sum = sum(c_across(starts_with("Y")), 
+                       na.rm = TRUE)) %>%
+    pull(Y_sum) %>%
+    mean()
+  
+  return(counterfactual_mean)
+}
+
+
+```
+
+```{r,eval=FALSE}
+# 1 more wolf is killed, with delay 
+d_dose_1_delay <- function(x,y) {
+  return(tibble(A1=rep(1, length(x)),
+                A2 = rep(1, length(x))))
+}
+
+# shift dose up 
+# d_shift_dose_up <- function(x,y) {
+#   return(tibble(A1=x+1,
+#                 A2 = y))
+# }
+
+
+
+
+```
+
+```{r calculate-counterfactual-means,eval=FALSE}
+
+# N_PACKS <- 1e5 
+# ifelse(y_previous==1 & treat<3, treat+1, treat)
+
+mean_add_dose <- get_counterfactual_mean(
+  years = N_YEARS,
+  n_packs = N_PACKS,
+  intervention = d_add_dose,
+  interval_length=1/7)
+
+# mean (no change)
+mean_no_change <- get_counterfactual_mean(
+  years = N_YEARS,
+  n_packs = N_PACKS,
+  intervention = d_identity,
+  interval_length=1/7)
+
+mean_add_dose/mean_no_change
+
+mean_delay <- get_counterfactual_mean(
+  years = N_YEARS,
+  n_packs = N_PACKS,
+  intervention = d_delay,
+  interval_length=1/7)
+
+mean_no_delay <- get_counterfactual_mean(
+  years = N_YEARS,
+  n_packs = N_PACKS,
+  intervention = d_no_delay,
+  interval_length=1/7)
+
+
+mean_no_change
+mean_add_dose
+mean_add_dose/mean_no_change
+mean_no_delay/mean_delay
+
+mean_shift_treatment_up
+mean_no_change
+
+truth <- list(mean_no_change=mean_no_change,
+              mean_add_dose=mean_add_dose,
+              mean_no_delay=mean_no_delay,
+              mean_delay=mean_delay)
+
+saveRDS(truth, here::here('data/truth_from_counterfactuals.RDS'))
+
+```
+
+## True Treatment Effects
+
+```{r,results='asis',eval=FALSE}
+
+truth <- readRDS(here::here('data/truth_from_counterfactuals.RDS'))
+
+cat("* True shift effect:", 
+    truth$mean_shift_treatment_up-truth$mean_no_change)
+cat("* True treatment effect (no delay):",
+    truth$mean_treat_no_delay-truth$mean_no_treat)
+cat("* True treatment effect (with delay):", 
+    truth$mean_treat_delay-truth$mean_no_treat)
+
+
+```
+
+```{r,eval=FALSE, include=FALSE}
+no_treatment <- run_simulation(
+  years=N_YEARS, 
+  n_packs=N_PACKS, 
+  intervention = d_dose_1_delay) 
+
+mean_no_treatment <- no_treatment %>%
+  rowwise() %>%
+  mutate(Y_sum = sum(c_across(starts_with("Y")), 
+                     na.rm = TRUE)) %>%
+  pull(Y_sum) %>%
+  mean()
+
+
+
+
+```
+
+# Data Quality Checks  {.tabset}
+
+## Pack Size
+
+```{r}
+
+L_length <- current_dat %>% 
+  select(contains("L")) %>%
+  ncol()
+
+current_dat %>%
+  select(contains("L")) %>%
+  pivot_longer(cols=everything()) %>%
+  mutate(name = factor(name, 
+                       levels=c(paste0("L", 0:L_length)))) %>%
+  ggplot(aes(x=value)) +
+  geom_histogram() + 
+  facet_wrap(~name)+
+  theme_c()  +
+  labs(title="Distribution of the Pack Size, by Interval")
+
+
+```
+
+
+
+## Wolves Removed Among the Treated
+
+
+```{r}
+
+A_length <- current_dat %>%
+  select(starts_with("A") & contains("_1")) %>% 
+  ncol()
+
+counts_of_treatment_among_events <- map_df(1:A_length, ~{
+  dat <- current_dat %>%
+    select(all_of(c( paste0("A", .x, "_1"), 
+                     paste0("A", .x, "_2"),
+                     paste0("Y", .x)))) %>%
+             group_by(across(everything())) %>%
+             summarize(n=n()) %>%
+             filter(!if_all(-n,~ .x==0)) %>%
+    mutate(time_point=.x)
+  colnames(dat) <- c("A1", "A2", "Y", "n", "time_point")
+  return(dat)
+}) 
+
+counts_of_treatment_among_events %>%
+  mutate(A2=factor(A2)) %>%
+  ggplot(aes(x=A1, y=n, fill=A2)) +
+  geom_bar(stat="identity", position="dodge") +
+  facet_wrap(~time_point)
+
+```
+
+
+```{r}
+
+A_length <- current_dat %>%
+  select(starts_with("A") & contains("_1")) %>% 
+  ncol()
+
+counts_of_treatment_among_events <- map_df(1:A_length, ~{
+  dat <- current_dat %>%
+    select(all_of(c( paste0("A", .x, "_1"), 
+                     paste0("Y", .x)))) %>%
+             group_by(across(everything())) %>%
+             summarize(n=n()) %>%
+             filter(!if_all(-n,~ .x==0)) %>%
+    mutate(time_point=.x)
+  colnames(dat) <- c("A", "Y", "n", "time_point")
+  return(dat)
+})
+
+counts_of_treatment_among_events %>%
+  ggplot(aes(x=A, y= n)) +
+  geom_bar(stat="identity") +
+  facet_wrap(~time_point) +
+  labs(x="Wolves Removed",
+       title="Wolves Removed Among Those with an Event",
+       y="Count") +
+  theme_c() 
+
+
+
+```
+
+```{r}
+
+counts_of_treatment_among_events <- map_df(1:A_length, ~{
+  dat <- current_dat %>%
+    select(all_of(c( paste0("A", .x, "_2"), 
+                     paste0("Y", .x)))) %>%
+             group_by(across(everything())) %>%
+             summarize(n=n()) %>%
+             filter(!if_all(-n,~ .x==0)) %>%
+    mutate(time_point=.x)
+  colnames(dat) <- c("A", "Y", "n", "time_point")
+  return(dat)
+})
+
+
+counts_of_treatment_among_events %>%
+  ggplot(aes(x=A, y= n)) +
+  geom_bar(stat="identity") +
+  facet_wrap(~time_point) +
+  labs(x="Wolves Removed",
+       title="Of Instances Where Wolves Were Removed,\nPresence of Delay",
+       y="Count") +
+  theme_c() 
+
+```
+
+
+## Proportion of Packs with an Event
+
+```{r, fig.width=11}
+
+Y_length <- current_dat %>%
+  select(starts_with("Y")) %>% 
+  ncol()
+
+current_dat %>%
+  select(contains("Y")) %>%
+  reframe(across(everything(),~sum(.x)/length(.x))) %>%
+  pivot_longer(cols=everything()) %>%
+  mutate(name = factor(name, levels=c(paste0("Y", 1:Y_length))))  %>%
+  ggplot(aes(x=name, y=value)) +
+  geom_bar(stat="identity")+
+  labs(x="Time Point",
+       title="Depredation Events",
+       y="Proportion of Packs\nthat Had an Event") +
+  theme_c() 
+```
+
+```{r, eval=FALSE,include=FALSE}
+
+current_dat %>%
+  group_by(A1_1, Y1) %>%
+  summarize(n=n())
+
+
+current_dat %>%
+  select(starts_with("A") & contains("_1"),
+         contains("Y")) %>%
+  pivot_longer(cols=everything()) %>%
+  mutate(name = factor(name, levels=c(paste0("A", 0:A_length, "_1")))) %>%
+  ggplot(aes(x=value, fill=)) +
+  geom_histogram() + 
+  facet_wrap(~name)+
+  theme_c() 
+
+
+
+```
+
