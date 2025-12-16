@@ -3,9 +3,8 @@ title: "Estimation of Causal Effect via Emulation of RCTs"
 author: "Quinn White"
 date: "`r Sys.Date()`"
 output: 
-  html_document:
-    code_folding: hide 
-    toc: true
+  rmdformats::readthedown:
+    code_folding: hide
 knit: (function(input,...) {
   rmarkdown::render(input,output_dir=here::here("output"))})
 ---
@@ -56,6 +55,7 @@ theme_c <- function(...){
 }
 
 
+
 ```
 
 # Set-Up 
@@ -93,7 +93,7 @@ get_X_at_k <- function(time_point, dat, n_packs) {
 
 get_outcome_at_k <- function(time_point, dat, n_packs,
                              interval_length, 
-                             lambda_0=10) {
+                             lambda_0=8) {
   
     # Y_{k-1}
     Y_prev <- dat %>% pull(paste0("Y", time_point-1))
@@ -118,39 +118,109 @@ get_outcome_at_k <- function(time_point, dat, n_packs,
     most_recent_depredation_event <- dat %>% 
       mutate(most_recent = ifelse(
       rowSums(select(., matches("Y"))) == 0,
-           0, max.col(select(., matches("Y")),
+           NA, max.col(select(., matches("Y")),
                       ties.method="last"))) %>%
       pull(most_recent)
-      
+
+
+    # 1. Extract A*_1 columns into a matrix
+    Amat <- dat %>%
+      select(matches("^A[0-9]+_1$")) %>%
+      as.matrix()
+    
+    # 2. Helper to get k-th most recent (k=1,2,3,...)
+    get_kth_most_recent <- function(x, k) {
+      idx <- which(x == 1)
+      if (length(idx) < k) return(NA)  # or NA_integer_ if you prefer
+      sort(idx, decreasing = TRUE)[k]
+    }
+    
+    # 3. Apply rowwise over the matrix
+   # most_recent_treatment  <- apply(Amat, 1, get_kth_most_recent, k = 1)
+   #  cat(all(most_recent_treatment==most_recent_treatment_new))
+
+    second_most_recent_treatment <- apply(Amat, 1, get_kth_most_recent, k = 2)
+    third_most_recent_treatment  <- apply(Amat, 1, get_kth_most_recent, k = 3)
+    
     # delay is time from most recent treatment to current time 
     # if treatment has happened 
-    delay <- ifelse(most_recent_treatment != 0, 
-                    (time_point - most_recent_treatment),
-                    0) 
+    # treatment only effective if happened after dep event 
+    # delay <- ifelse(most_recent_treatment != 0 &
+    #                   most_recent_depredation_event <= most_recent_treatment, 
+    #                 (time_point - most_recent_treatment),
+    #                 NA) 
+    # 
+    # delay_2 <- ifelse(second_most_recent_treatment != 0 &
+    #                   most_recent_depredation_event <= second_most_recent_treatment, 
+    #                 (time_point - second_most_recent_treatment),
+    #                 NA) 
+    # delay_3 <- ifelse(third_most_recent_treatment != 0 &
+    #                   most_recent_depredation_event <= third_most_recent_treatment, 
+    #                 (time_point - third_most_recent_treatment),
+    #                 NA) 
     
-    A2_prev <- delay
-  
-   A2_effect <- case_when(A2_prev == 0  ~ 0,
-                           A2_prev <= 1 ~ 7,
-                           A2_prev > 1 & A2_prev <= 2  ~ 4,
-                           A2_prev > 2 & A2_prev <= 3 ~ 1,
-                           A2_prev > 3 ~ 0)
     
+    delay <- ifelse(most_recent_treatment != 0 &
+                      most_recent_depredation_event <= most_recent_treatment, 
+                    (most_recent_treatment - most_recent_depredation_event),
+                    NA) 
+    
+    delay_2 <- ifelse(second_most_recent_treatment != 0 &
+                      most_recent_depredation_event <= second_most_recent_treatment, 
+                    (second_most_recent_treatment - most_recent_depredation_event),
+                    NA) 
+    delay_3 <- ifelse(third_most_recent_treatment != 0 &
+                      most_recent_depredation_event <= third_most_recent_treatment, 
+                    (third_most_recent_treatment - most_recent_depredation_event),
+                    NA) 
+    
+    # cat(most_recent_treatment,
+    #     second_most_recent_treatment,
+    #     third_most_recent_treatment,
+    #     delay, delay_2, delay_3, "\n")
+    
+   A2_prev <- delay
+   
+
+
+   A2_effect <- case_when( is.na(A2_prev) ~ 0,
+                           A2_prev == 0 ~ 4,
+                           A2_prev  == 1 ~ 3,
+                           A2_prev == 2  ~ 2,
+                           A2_prev >= 3 ~ 0)
+   
+   # if second treatment is one after time point, has effect 
+   A2_effect_2 <- case_when( is.na(delay_2) ~ 0,
+                           delay_2 == 0 ~ 0,
+                           delay_2 == 1 ~ 0,
+                           delay_2  == 2  ~ 0,
+                           delay_2 >= 3 ~ 0)
+   # if third treatment is two after time point, has effect 
+   A2_effect_3 <- case_when( is.na(delay_3) ~ 0,
+                           delay_3 == 0 ~ 0,
+                           delay_3 == 1 ~ 0,
+                           delay_3  == 2  ~ 0,
+                           delay_3 >= 3 ~ 0)
+    
+
+   # cat("Most recent event=", most_recent_depredation_event,
+   #     "Most recent treatment=", most_recent_treatment,
+   #     ", treatment delay=", A2_prev, ", effect=", A2_effect, "\n")
+
     prob_event <- plogis(
 
-      (-10 + 
+      (-9 + 
         #bigger pack -> more mouths to feed
         2.7*(X_prev/sqrt(lambda_0))
         # more likely to kill if killed before 
         +2*ifelse(Y_prev==1, 1.1, 1)  
+       - 10*A2_effect # - 6*A2_effect_2 - 1 * A2_effect_3
         # behavioral effect - stronger effect if delay is small 
-        - 10 * A1_prev*A2_effect
-        - 5 * W_prev # +
-        # less likely if take out breeding female
-        # - 10 * A3_prev 
+        #- 20 * A1 - 10 * A_lag1 - 2 * A_lag2
+        #- 1.1 * A1*A_lag1 - 1.1 * A_lag2*A_lag1 - 1.1 * A1* A_lag2
+        - 5 * W_prev
        )
         * .05 )*(plogis(interval_length)^8)*1.1
-    
 
     Y_new <- rbinom(n_packs, size=1, prob=prob_event)
     Yname <- paste0("Y", time_point)
@@ -159,6 +229,7 @@ get_outcome_at_k <- function(time_point, dat, n_packs,
       bind_cols(tibble(
         !!Yname := Y_new))
 }
+
 
 # assumes time point is in weeks 
 get_W_at_k <- function(time_point, dat, n_packs, interval_length) {
@@ -181,7 +252,7 @@ get_W_at_k <- function(time_point, dat, n_packs, interval_length) {
 get_treatment_at_k <- function(time_point, dat, n_packs,
                                interval_length=8,
                                intervention=NULL,
-                               lambda_0=10,
+                               lambda_0=8,
                                poach_harvest_only=TRUE) {
   
   # X_{k}, Y_{k}
@@ -198,7 +269,7 @@ get_treatment_at_k <- function(time_point, dat, n_packs,
       prob_treat <- plogis(-6 +.7*(X_prev)/sqrt(lambda_0) 
                            - .5* W_prev  
                             # + rnorm(n_packs,0,3)
-                           )*(plogis(interval_length)^(7))*1.05
+                           )*(plogis(interval_length)^(7))*1.3
   }
   
 
@@ -231,10 +302,354 @@ get_treatment_at_k <- function(time_point, dat, n_packs,
 
 ```
 
+# Clinical Trial Setup 
 
-# Simulate Data 
+```{r run-trial}
+
+# assumes time point is in weeks 
+get_W_at_k_trial <- function(time_point, true_time, dat, n_packs, interval_length) {
+  
+  week <- true_time*interval_length
+  if(true_time*interval_length >= 52)  {
+    week <- true_time*interval_length - 52
+  } 
+  if(week < 8 | week > 12*4){
+    W <- rep(1, nrow(dat))
+  } else {
+    W <- rep(0, nrow(dat))
+  }
+    Wname <- paste0("W", time_point)
+    
+    dat %>% bind_cols(tibble(!!Wname := W))
+  
+}
+
+
+# for simplicity, suppose study start is in January 
+# intervention must be a function that outputs A1, A2 (assigned treatments) 
+# takes in the natural value of treatment (so can be a shift intervention)
+run_trial <- function(weeks=16, n_packs=5,
+                           interval_length=8, 
+                           intervention=NULL) {
+  
+  # 2 week intervals
+  K <- round(weeks/interval_length)
+  
+  #----------------------------------------------------------------
+  # Baseline covariates: number of wolves in pack at study start 
+  #----------------------------------------------------------------
+  lambda_0 <- 8 
+  X1 <- rpois(n_packs, lambda_0)
+  # winter -> cows close to home -> safer 
+  # calendar start date
+  trial_start <- sample(size=1, 1:26)
+
+  # first depredation event
+  # prob_event <- plogis(-4 + .3*(L0)/sqrt(lambda_0)) 
+  #prob_event <- plogis(-2 + .3*(X1)/sqrt(lambda_0)) * plogis(interval_length)
+  #Y1 <- rbinom(n_packs, size=1, prob=prob_event)
+  Y1 <- rep(1,n_packs) 
+  # P1 <- rbinom(n_packs, size=1, prob=.2)
+  
+  current_dat <- bind_cols(X1=X1, Y1=Y1)
+  current_dat <- get_W_at_k_trial(1, trial_start, current_dat, 
+                                  n_packs, interval_length)
+ # glimpse(current_dat)
+  #current_dat <- bind_col(X1=X1, Y1=Y1, W1=W1, P1=P1)
+  # current_dat <- bind_cols(X1=X1, Y1=Y1, W1=W1)
+
+  for (i in 1:K) {
+    # cat("i=",i)
+    current_dat <- get_treatment_at_k(i, 
+                                      current_dat,
+                                      n_packs,
+                                      interval_length,
+                                      intervention=intervention)
+
+    current_dat <- get_X_at_k(i+1, current_dat, n_packs)
+    current_dat <- get_W_at_k_trial(i+1, trial_start+i, current_dat, 
+                                    n_packs, interval_length)
+    current_dat <- get_outcome_at_k(i+1, current_dat, n_packs, interval_length)
+    
+  }
+  
+  current_dat <- get_treatment_at_k(K+1, current_dat,
+                                      n_packs,
+                                      interval_length,
+                                      intervention=intervention)
+
+  # incorporate right truncation
+  current_dat <- current_dat %>%
+    rowwise() %>%
+    mutate(Y_sum = sum(c_across(starts_with("Y")), 
+                       na.rm = TRUE)) %>%
+    ungroup() %>%
+    filter(Y_sum >0) %>%
+    select(-Y_sum)
+
+  return(current_dat)
+
+}
+
+# run_trial(weeks=16, n_packs=5)
+
+
+
+
+```
+
+# Counterfactual Means 
+
+Approximation of the truth under each regime of interest.
+
+
+```{r}
+
+get_counterfactual_mean_updated <- function(
+    weeks, n_packs, 
+    interval_length=2,
+    intervention,
+    n_trials=5000) {
+  
+  dat <- map_df(1:n_trials, ~run_trial(weeks=weeks,
+                                       n_packs=n_packs,
+                                       interval_length,intervention))
+  
+  counterfactual_mean <- dat %>%
+    select(contains("Y")) %>%
+    select(-c(Y1)) %>%
+    rowSums() %>%
+    mean()
+  
+  return(counterfactual_mean)
+  
+}
+```
+
+
+```{r counterfactual-mean-estimates}
+
+#---------------------------------------------------------------------------------
+# always treat at __ weeks, don't treat __ or ___, natural treatment otherwise
+#---------------------------------------------------------------------------------
+d_always_treat_at_two_weeks_natural <- function(dat, time_point, current_a=NULL) {
+  
+  if(time_point == 1) {
+    A1_new=rep(1, nrow(dat))
+  }else if (time_point %in% c(2,3)) {
+    A1_new=rep(0, nrow(dat))
+  } else {
+    A1_new = current_a
+  }
+  return(tibble(A1=A1_new))
+}
+d_always_treat_at_four_weeks_natural <- function(dat, time_point, current_a=NULL) {
+  
+  if(time_point == 2) {
+    A1_new=rep(1, nrow(dat))
+  }else if (time_point %in% c(1,3)) {
+    A1_new=rep(0, nrow(dat))
+  } else {
+    A1_new = current_a
+  }
+  return(tibble(A1=A1_new))
+}
+d_always_treat_at_six_weeks_natural <- function(dat, time_point, current_a=NULL) {
+  
+  if(time_point == 3) {
+    A1_new=rep(1, nrow(dat))
+  }else if (time_point %in% c(1,2)) {
+    A1_new=rep(0, nrow(dat))
+  } else {
+    A1_new = current_a
+  }
+  return(tibble(A1=A1_new))
+}
+dont_treat_within_6_weeks_after_dep_event <- function(dat, time_point, current_a) {
+  
+  if (time_point %in% c(1,2,3)) {
+    A1_new = rep(0, nrow(dat))
+  } else{
+    A1_new =current_a
+  }
+
+  return(tibble(A1=A1_new))
+}
+
+#-----------------------------------------------------------
+# never treat within 4 months of depredation event 
+#-----------------------------------------------------------
+never_treat_within_4_months <- function(dat, time_point, current_a=NULL) {
+     
+  return(tibble(A1=rep(0, nrow(dat))))
+  
+}
+
+#------------------------------------------------------------------
+# always treat at two weeks, don't treat within 4 months otherwise  
+#------------------------------------------------------------------
+d_always_treat_at_two_weeks <- function(dat, time_point, current_a=NULL) {
+  
+  A1_new = ifelse(time_point==1, 1, 0)
+
+  return(tibble(A1=A1_new))
+  
+}
+
+#------------------------------------------------------------------
+# always treat at four weeks, don't treat within 4 months otherwise  
+#------------------------------------------------------------------
+d_always_treat_at_four_weeks <- function(dat, time_point, current_a=NULL) {
+  
+  A1_new = ifelse(time_point==2, 1, 0)
+    
+  return(tibble(A1=A1_new))
+  
+}
+
+#------------------------------------------------------------------
+# always treat at six weeks, don't treat within 4 months otherwise  
+#------------------------------------------------------------------
+d_always_treat_at_six_weeks <- function(dat, time_point, current_a=NULL) {
+  
+  A1_new = ifelse(time_point==3, 1, 0)
+    
+  return(tibble(A1=A1_new))
+  
+}
+
+
+#------------------
+# never treat
+#------------------
+d_never_treat <- function(dat, time_point, current_a=NULL) {
+
+  return(tibble(A1=rep(0,nrow(dat))))
+                
+}
+
+
+```
+
+```{r counterfactuals-natural,eval=FALSE}
+
+treat_at_2_then_natural <- get_counterfactual_mean_updated(
+  16, n_packs=5,interval_length= 2, d_always_treat_at_two_weeks_natural)
+
+treat_at_4_then_natural <-  get_counterfactual_mean_updated(
+  16, n_packs=5,interval_length= 2, d_always_treat_at_four_weeks_natural)
+
+treat_at_6_then_natural <-  get_counterfactual_mean_updated(
+  16, n_packs=5,interval_length= 2, d_always_treat_at_six_weeks_natural)
+
+dont_treat_6_weeks_then_natural <- get_counterfactual_mean_updated(
+  16, n_packs=5,interval_length= 2, dont_treat_within_6_weeks_after_dep_event)
+
+
+cat("A1=1,A2=0,A3=0, natural", "\n")
+treat_at_2_then_natural/dont_treat_6_weeks_then_natural
+cat("A1=0,A2=1,A3=0, natural", "\n")
+treat_at_4_then_natural/dont_treat_6_weeks_then_natural
+cat("A1=0,A2=0,A3=1, natural","\n")
+treat_at_6_then_natural/dont_treat_6_weeks_then_natural
+
+
+```
+
+
+```{r counterfactuals-never-treat,eval=FALSE}
+
+treat_only_at_2 <- get_counterfactual_mean_updated(
+  16, n_packs=5,interval_length= 2, d_always_treat_at_two_weeks)
+
+treat_only_at_4 <- get_counterfactual_mean_updated(
+  16, n_packs=5,interval_length= 2, d_always_treat_at_four_weeks)
+
+treat_only_at_6 <- get_counterfactual_mean_updated(
+  16, n_packs=5, interval_length= 2, d_always_treat_at_six_weeks)
+
+never_treat <-get_counterfactual_mean_updated(
+  16, n_packs=5, interval_length= 2, d_never_treat)
+
+
+cat("A1=1,A2=0,A3=0, never treat", "\n")
+treat_only_at_2/never_treat
+cat("A1=0,A2=1,A3=0, never treat", "\n")
+treat_only_at_4/never_treat
+cat("A1=0,A2=0,A3=1, never treat","\n")
+treat_only_at_6/never_treat
+
+
+```
+
+
+```{r,eval=FALSE}
+
+saveRDS(list(treat_2_natural = treat_at_2_then_natural/dont_treat_6_weeks_then_natural,
+              treat_4_natural = treat_at_4_then_natural/dont_treat_6_weeks_then_natural,
+              treat_6_natural = treat_at_6_then_natural/dont_treat_6_weeks_then_natural,
+             only_2 = treat_only_at_2/never_treat,
+             only_4 = treat_only_at_4/never_treat,
+             only_6 = treat_only_at_6/never_treat
+              ), here("data/truth_trials.RDS"))
+
+
+```
+
+```{r counterfactual-results}
+
+truth <- readRDS(here("data/truth_trials.RDS"))
+
+truth_df <- tibble(Regime = c("A1=1,A2=0,A3=0",
+                  "A1=0,A2=1,A3=0",
+                  "A1=0,A2=0,A3=1",
+                  "A1=1,A2=0,A3=0",
+                  "A1=0,A2=1,A3=0",
+                  "A1=0,A2=0,A3=1"),
+       `Regime After Interval 3` = c(
+         rep("Natural", 3),
+         rep("Never Treat", 3)
+       ),
+       `Mean` = c(truth$treat_2_natural,
+                  truth$treat_4_natural,
+                  truth$treat_6_natural,
+                  truth$only_2,
+                  truth$only_4,
+                  truth$only_6
+                  ))
+
+library(kableExtra)
+
+truth_df %>%
+  kbl() %>%
+  collapse_rows(columns=2)
+
+```
+
+```{r print-counterfactuals,include=FALSE}
+
+cat("A1=1,A2=0,A3=0, natural", "\n")
+truth$treat_2_natural
+cat("A1=0,A2=1,A3=0, natural", "\n")
+truth$treat_4_natural
+cat("A1=0,A2=0,A3=1, natural","\n")
+truth$treat_6_natural
+
+cat("A1=1,A2=0,A3=0, never treat", "\n")
+truth$only_2
+cat("A1=0,A2=1,A3=0, never treat", "\n")
+truth$only_4
+cat("A1=0,A2=0,A3=1, never treat","\n")
+truth$only_6
+
+```
+
 
 ```{r run-simulation}
+
+##################################################
+# for all time points - not trial set-up
+##################################################
 
 # for simplicity, suppose study start is in January 
 # intervention must be a function that outputs A1, A2 (assigned treatments) 
@@ -249,7 +664,7 @@ run_simulation <- function(years=5, n_packs=30,
   #----------------------------------------------------------------
   # Baseline covariates: number of wolves in pack at study start 
   #----------------------------------------------------------------
-  lambda_0 <- 10 
+  lambda_0 <- 8 
   X1 <- rpois(n_packs, lambda_0)
   # winter -> cows close to home -> safer 
   W1 <- rep(1, n_packs)
@@ -298,7 +713,7 @@ run_simulation <- function(years=5, n_packs=30,
 
 ```
 
-```{r get-biweekly-dat, class.source="fold-show"}
+```{r get-biweekly-dat, eval=FALSE}
 
 # biweekly
 # current_dat <- run_simulation(years=10, 
@@ -306,27 +721,67 @@ run_simulation <- function(years=5, n_packs=30,
 #                               interval_length=2) %>%
 #   mutate(id = row_number())
 
-
-
 # for testing -- biweekly
 current_dat <- run_simulation(years=10, 
-                              n_packs=1000, 
+                              n_packs=2000, 
                               interval_length=2) %>%
   mutate(id = row_number())
 
 
 
+
 ```
 
+```{r get-trial-dat,eval=FALSE}
+
+df <- map_df(1:1000, ~run_trial(weeks=16,
+                                       n_packs=5,
+                                       interval_length=2,
+                                intervention=NULL) %>%
+               mutate(id = sample(size=5, 1:50, replace=FALSE)))
   
-# Generate Counterfactuals
+df <- df %>%
+  rename_with(.cols=contains("A"), ~gsub("_1", "", .x)) %>%
+  select(-c(A9,W9,X9))
+
+
+saveRDS(df, here("data/df_trial.RDS"))
+
+```
+
 
 
 ```{r}
 
-get_counterfactual_mean_new <- function(years, n_packs, interval_length=2,
-                                    intervention
-                                    ) {
+```
+
+
+```{r,eval=FALSE}
+
+test <- current_dat %>%
+    rowwise() %>%
+    mutate(Y_sum = sum(c_across(starts_with("Y")), 
+                       na.rm = TRUE),
+              A_sum = sum(c_across(matches("A*_1")), 
+                       na.rm = TRUE)) 
+test %>%
+  ggplot(aes(x=Y_sum)) +
+  geom_histogram()
+
+test %>%
+  ggplot(aes(x=A_sum)) +
+  geom_histogram()
+
+
+```
+
+  
+```{r get-counterfactuals,eval=FALSE}
+
+get_counterfactual_mean_new <- function(
+    years, n_packs, 
+    interval_length=2,
+    intervention) {
   
   dat <- run_simulation(
     years=years, 
@@ -337,6 +792,7 @@ get_counterfactual_mean_new <- function(years, n_packs, interval_length=2,
   counterfactual_mean <- get_mean_4_months_after_dep_event(dat)
   
   return(counterfactual_mean)
+  
 }
 
 # modify to make comparable -- i.e. don't treat within 6 weeks,
@@ -524,6 +980,97 @@ d_always_treat_at_two_weeks_natural <- function(dat, time_point, current_a=NULL)
 }
 
 
+d_always_treat_at_four_weeks_natural <- function(dat, time_point, current_a=NULL) {
+  
+  if(time_point > 2) {
+    
+     y_before <- dat %>% 
+       pull(paste0("Y", time_point))
+     y_biweek_lag1 <- dat %>% 
+       pull(paste0("Y", time_point-1))
+     y_biweek_lag2 <- dat %>% 
+       pull(paste0("Y", time_point-2))
+     
+     # treat when Y at same time point is 1 (Y1=1 => A1=1)
+     # don't treat if Y_{t-1} is 1 (this implies Y1=1 => A2=0)
+     # don't treat if Y_{t-2} is 1 (this implies Y1=1 => A3=0)
+
+     A1_new = case_when(y_before == 1 ~ 0,
+                        y_biweek_lag1 == 1 ~ 1,
+                        y_biweek_lag2 == 1 ~ 0,
+                        TRUE ~ current_a)
+
+  } else if(time_point ==2) {
+    
+     y_before <- dat %>% 
+       pull(paste0("Y", time_point))
+     y_biweek_lag1 <- dat %>% 
+       pull(paste0("Y", time_point-1))
+     
+     A1_new = case_when(y_before == 1 ~ 0,
+                        y_biweek_lag1 == 1 ~ 0,
+                        TRUE ~ current_a)
+    
+  } else if(time_point ==1) {
+    
+     y_before <- dat %>% 
+       pull(paste0("Y", time_point))
+  
+     A1_new = case_when(y_before == 1 ~ 0,
+                        TRUE ~ current_a)
+    
+  }
+
+  return(tibble(A1=A1_new))
+  
+}
+
+
+d_always_treat_at_six_weeks_natural <- function(dat, time_point, current_a=NULL) {
+  
+  if(time_point > 2) {
+    
+     y_before <- dat %>% 
+       pull(paste0("Y", time_point))
+     y_biweek_lag1 <- dat %>% 
+       pull(paste0("Y", time_point-1))
+     y_biweek_lag2 <- dat %>% 
+       pull(paste0("Y", time_point-2))
+     
+     # treat when Y at same time point is 1 (Y1=1 => A1=1)
+     # don't treat if Y_{t-1} is 1 (this implies Y1=1 => A2=0)
+     # don't treat if Y_{t-2} is 1 (this implies Y1=1 => A3=0)
+
+     A1_new = case_when(y_before == 1 ~ 0,
+                        y_biweek_lag1 == 1 ~ 0,
+                        y_biweek_lag2 == 1 ~ 1,
+                        TRUE ~ current_a)
+
+  } else if(time_point ==2) {
+    
+     y_before <- dat %>% 
+       pull(paste0("Y", time_point))
+     y_biweek_lag1 <- dat %>% 
+       pull(paste0("Y", time_point-1))
+     
+     A1_new = case_when(y_before == 1 ~ 0,
+                        y_biweek_lag1 == 0 ~ 0,
+                        TRUE ~ current_a)
+    
+  } else if(time_point ==1) {
+    
+     y_before <- dat %>% 
+       pull(paste0("Y", time_point))
+  
+     A1_new = case_when(y_before == 1 ~ 0,
+                        TRUE ~ current_a)
+    
+  }
+
+  return(tibble(A1=A1_new))
+  
+}
+
 #-----------------------------------------------------------
 # never treat within 4 months of depredation event 
 #-----------------------------------------------------------
@@ -545,36 +1092,55 @@ d_never_treat <- function(dat, time_point, current_a=NULL) {
                 
 }
 
-N_PACKS <- 1e4 
+N_PACKS <- 1e3 
 N_YEARS <- 10 
 
-identity <- get_counterfactual_mean_new(N_YEARS, N_PACKS, 2, NULL)
-
-never_treat <- get_counterfactual_mean_new(
-  N_YEARS, N_PACKS, 2, never_treat_within_4_months)
-
-only_treat_two_weeks <- get_counterfactual_mean_new(
-  N_YEARS, N_PACKS, 2, d_always_treat_at_two_weeks)
-
-# treat at 2, then don't 2-6
-treat_two_weeks_then_natural <- get_counterfactual_mean_new(
-  N_YEARS, N_PACKS, 2, d_always_treat_at_two_weeks_natural)
-
+# identity <- get_counterfactual_mean_new(N_YEARS, N_PACKS, 2, NULL)
+# 
+# never_treat <- get_counterfactual_mean_new(
+#   N_YEARS, N_PACKS, 2, never_treat_within_4_months)
+# 
+# only_treat_two_weeks <- get_counterfactual_mean_new(
+#   N_YEARS, N_PACKS, 2, d_always_treat_at_two_weeks)
+# 
 
 # treat at 2 then natural
-treat_two_weeks_then_natural_no_modification_2_to_6 <- get_counterfactual_mean_new(
-  N_YEARS, N_PACKS, 2, d_always_treat_at_two_weeks_natural_no_mod_2_to_6)
+# treat_two_weeks_then_natural_no_modification_2_to_6 <- get_counterfactual_mean_new(
+#   N_YEARS, N_PACKS, 2, d_always_treat_at_two_weeks_natural_no_mod_2_to_6)
+# 
+# dont_treat_two_weeks_then_natural_no_modification_2_to_6 <- get_counterfactual_mean_new(
+#   N_YEARS, N_PACKS, 2,  d_dont_treat_at_two_weeks_natural_no_mod_2_to_6)
 
-dont_treat_two_weeks_then_natural_no_modification_2_to_6 <- get_counterfactual_mean_new(
-  N_YEARS, N_PACKS, 2,  d_dont_treat_at_two_weeks_natural_no_mod_2_to_6)
 
-cat("only modifying A1, leaving all others natural",
-    treat_two_weeks_then_natural_no_modification_2_to_6/dont_treat_two_weeks_then_natural_no_modification_2_to_6)
+# cat("only modifying A1, leaving all others natural",
+#     treat_two_weeks_then_natural_no_modification_2_to_6/dont_treat_two_weeks_then_natural_no_modification_2_to_6)
 
+# treat at 2, then don't 2-6
+treat_at_2_then_natural <- get_counterfactual_mean_new(
+  N_YEARS, N_PACKS, 2, d_always_treat_at_two_weeks_natural)
+
+treat_at_4_then_natural <-  get_counterfactual_mean_new(
+  N_YEARS, N_PACKS, 2, d_always_treat_at_four_weeks_natural)
+
+treat_at_6_then_natural <-  get_counterfactual_mean_new(
+  N_YEARS, N_PACKS, 2, d_always_treat_at_six_weeks_natural)
 
 dont_treat_6_weeks_then_natural <- get_counterfactual_mean_new(
   N_YEARS, N_PACKS, 2, dont_treat_within_6_weeks_after_dep_event)
 
+
+cat("A1=1,A2=0,A3=0, natural", "\n")
+treat_at_2_then_natural/dont_treat_6_weeks_then_natural
+cat("A1=0,A2=1,A3=0, natural", "\n")
+treat_at_4_then_natural/dont_treat_6_weeks_then_natural
+cat("A1=0,A2=0,A3=1, natural","\n")
+treat_at_6_then_natural/dont_treat_6_weeks_then_natural
+
+
+
+```
+
+```{r,eval=FALSE}
 # only_treat_two_weeks/never_treat
 # only_treat_two_weeks/identity
 
@@ -592,6 +1158,9 @@ saveRDS(truth, here::here('data/truth_from_counterfactuals.RDS'))
 
 
 ```
+
+
+
 
 
 # Modeling 
@@ -647,7 +1216,7 @@ format_dat <- function(current_dat) {
 
 ```
 
-```{r reformat-current-dat-into-trial-format}
+```{r reformat-current-dat-into-trial-format,eval=FALSE}
 
 #----------------------------------
 # reformat data into trial format 
@@ -663,6 +1232,8 @@ saveRDS(df, here('data/long_df.RDS'))
 ```
 
 ```{r ipw-and-modeling-functions}
+
+library(SuperLearner)
 confound_window <- 0
 
 #-----------------------------------
@@ -706,10 +1277,6 @@ get_weight_by_k_superlearner <- function(k,dat) {
     
   }                     
   
-  # mod_a1_denom <- glm(as.formula(paste0(treat_name, "~",
-  #                               hist) ),
-  #               data=dat, family=binomial)
-  
   mod_a1_denom <-get_mod_superlearner(treat_name,hist,dat)
   
   cat("k=",k,"\n")
@@ -719,19 +1286,6 @@ get_weight_by_k_superlearner <- function(k,dat) {
 
   treat_name <- paste0("A", k)
   
-  # pred <- dat %>%
-  #   mutate(pred_num = predict(mod_a1_num,
-  #                         type="response",
-  #              newdata=dat),
-  #          pred_num = ifelse(dat[[treat_name]] == 1,
-  #                        pred_num,
-  #                        1-pred_num),
-  #          pred_denom = predict(mod_a1_denom,
-  #                         type="response",
-  #              newdata=dat),
-  #          pred_denom = ifelse(dat[[treat_name]]==1,
-  #                              pred_denom,
-  #                              1-pred_denom))
   pred <- dat %>%
     mutate(pred_num =ifelse(k>1, mod_a1_num$SL.predict,
                             predict(mod_a1_num,
@@ -750,7 +1304,7 @@ get_weight_by_k_superlearner <- function(k,dat) {
 }
 
 
-get_weight_by_k <- function(k,dat) {
+get_weight_by_k <- function(k, dat, quiet=FALSE) {
   
   confound_end <- confound_window+k
   
@@ -766,6 +1320,8 @@ get_weight_by_k <- function(k,dat) {
                         ),
                         # paste0("A", 1:treat_end)),
                         collapse="+")
+
+  
   confound_hist <- ifelse(k==1, "X1+W1", confound_hist)
   
   
@@ -794,11 +1350,15 @@ get_weight_by_k <- function(k,dat) {
 
   # mod_a1_denom <-get_mod_superlearner(treat_name,hist,dat)
   
-  cat("k=",k,"\n")
-  cat("Numerator=",paste0(treat_name, "~", treat_hist), "\n")
-  cat("Denominator=",paste0(treat_name, "~",
-                               hist), "\n")
+  
+  if (!quiet) {
+    cat("k=",k,"\n")
+    cat("Numerator=",paste0(treat_name, "~", treat_hist), "\n")
+    cat("Denominator=",paste0(treat_name, "~",
+                                 hist), "\n")
 
+  }
+  
   treat_name <- paste0("A", k)
   
   pred <- dat %>%
@@ -814,34 +1374,32 @@ get_weight_by_k <- function(k,dat) {
            pred_denom = ifelse(dat[[treat_name]]==1,
                                pred_denom,
                                1-pred_denom))
-  # pred <- dat %>%
-  #   mutate(pred_num =ifelse(k>1, mod_a1_num$SL.predict,
-  #                           predict(mod_a1_num,
-  #                                   type="response")),
-  #                           
-  #          pred_num = ifelse(dat[[treat_name]] == 1,
-  #                        pred_num,
-  #                        1-pred_num),
-  #          pred_denom = mod_a1_denom$SL.predict,
-  #          pred_denom = ifelse(dat[[treat_name]]==1,
-  #                              pred_denom,
-  #                              1-pred_denom))
-
+ 
   w <- pred$pred_num / pred$pred_denom
   return(w)
 }
 
 
-get_weights <- function(delta, dat) {
+get_weights <- function(delta, dat, superlearner=FALSE, quiet=FALSE) {
   
-  final_w <- map(1:delta, ~get_weight_by_k(k=.x,
-                                      dat=dat)) %>%
+  if(!superlearner) {
+     final_w <- map(1:delta, ~get_weight_by_k(k=.x,
+                                      dat=dat,
+                                      quiet=quiet)) %>%
     reduce(`*`)
+  }
+  else {
+      final_w <- map(1:delta, ~get_weight_by_k_superlearner(k=.x,
+                                      dat=dat)) %>%
+       reduce(`*`)
+  }
+ 
   
-  final_w_trunc <- ifelse(final_w < quantile(final_w,.01), 
+  
+  final_w_trunc <- ifelse(final_w < quantile(final_w,.005), 
                           quantile(final_w,.01), final_w)
   
-  final_w_trunc <- ifelse(final_w > quantile(final_w,.99),
+  final_w_trunc <- ifelse(final_w > quantile(final_w,.995),
                           quantile(final_w,.99), final_w_trunc)
 
   return(final_w_trunc)
@@ -860,12 +1418,12 @@ get_mod_superlearner <- function(treat_name, treat_hist, dat) {
   
   set.seed(123)
   covars <- strsplit(treat_hist, "+",fixed=TRUE) %>% unlist()
-  cat(covars)
+  # cat(covars)
   
   X_input <- dat %>%
     select(all_of(covars))
   
-  glimpse(X_input)
+  # glimpse(X_input)
   Y_input <- dat %>% pull(treat_name)
   
   sl_fit <- SuperLearner(
@@ -881,10 +1439,9 @@ get_mod_superlearner <- function(treat_name, treat_hist, dat) {
 }
 
 
-
-get_treatment_effect <- function(dat, delta, model_var, only=TRUE) {
+get_treatment_effect <- function(dat, delta, form, superlearner=FALSE, quiet=FALSE) {
   
-  w <- get_weights(delta=delta, dat=dat)
+  w <- get_weights(delta=delta, dat=dat, superlearner=superlearner, quiet=quiet)
   dat$ipw <- w
   
   svy_design <- svydesign(
@@ -893,15 +1450,15 @@ get_treatment_effect <- function(dat, delta, model_var, only=TRUE) {
     data = dat
   )
   
-  if(only){
-    var <- paste0(model_var, "_only")
-  } else{
-    var <- model_var
-  }
+  # if(only){
+  #   var <- paste0(model_var, "_only")
+  # } else{
+  #   var <- model_var
+  # }
   
-  model <- svyglm(as.formula(paste0("outcome~",var)),
+  model <- survey::svyglm(as.formula(form),
                   design=svy_design, family=poisson())
-  cat("model is", paste0("outcome~",var), "\n")
+  if(!quiet) cat("model is", form, "\n")
   ci <- confint(model) %>% 
       as.data.frame() %>%
      rename(lower=1, upper=2) %>%
@@ -913,9 +1470,14 @@ get_treatment_effect <- function(dat, delta, model_var, only=TRUE) {
     mutate(across(where(is.numeric), exp))
   
 }
- 
 
-df <- readRDS(here("data/long_df.RDS"))
+
+```
+
+
+```{r}
+
+df <- readRDS(here("data/df_trial.RDS"))
 
 outcome <- df %>%
      select(-Y1) %>%
@@ -923,128 +1485,175 @@ outcome <- df %>%
      rowSums() 
 df$outcome <- outcome 
 
-df <- df %>%
-    mutate(A1_only = A1==1 & A2==0 & A3==0,
-           A2_only = A1==0 & A2==1 & A3==0,
-           A3_only = A1==0 & A2==0 & A3==1,
-           A1_never_treat_only = A1==1 & A2==0 & A3==0
-           & A4==0 & A5 ==0 & A6== 0 & A7 == 0)
-
 ```
 
-```{r run-weighted-models}
+```{r add-factors-function}
 
-cat("Treat at 2 weeks, no treat at 2-6 weeks, then natural")
-get_treatment_effect(df, delta=3, "A1") 
-cat("Treat at 2-4 weeks, no treat otherwise within the 6 weeks, then natural")
-get_treatment_effect(df, delta=3, "A2") 
-cat("Treat at 4-6 weeks, no treat otherwise within the 6 weeks, then natural")
-get_treatment_effect(df, delta=3, "A3") 
-cat("Treat at 2-weeks, no treat otherwise in 4 month period")
-get_treatment_effect(df, delta=8, "A1_never_treat") 
-cat("Treat at 2-weeks, otherwise natural")
-# compare setting A=1 to A=0, natural otherwise
-get_treatment_effect(df, delta=1, "A1", only=FALSE) 
+add_factors <- function(dat) {
+  
+  outcome <- dat %>%
+     select(-Y1) %>%
+     select(contains("Y")) %>%
+     rowSums() 
+  dat$outcome <- outcome 
+  
+  dat <- dat %>%
+      mutate(A1_only = A1==1 & A2==0 & A3==0,
+             A2_only = A1==0 & A2==1 & A3==0,
+             A3_only = A1==0 & A2==0 & A3==1,
+             never_treat = A1==0 & A2==0 & A3==0,
+             A1_never_treat_only = A1==1 & A2==0 & A3==0
+             & A4==0 & A5 ==0 & A6== 0 & A7 == 0 & A8 == 0,
+            A2_never_treat_only = A1==0 & A2==1 & A3==0
+             & A4==0 & A5 ==0 & A6== 0 & A7 == 0 & A8 ==0,
+            A3_never_treat_only = A1==0 & A2==0 & A3==1
+             & A4==0 & A5 ==0 & A6== 0 & A7 == 0 & A8==0,
+            never_treat_whole_period = A1==0 & A2==0 & A3==0
+             & A4==0 & A5 ==0 & A6== 0 & A7 == 0 & A8==0)
+  
+  dat <- dat %>%
+    mutate(treatment_factor = case_when(
+      A1_only ==1 ~ "A1_only",
+      A2_only ==1 ~ "A2_only",
+      A3_only ==1 ~ "A3_only",
+      never_treat==1~"never_treat",
+      TRUE~"other")) %>%
+      mutate(treatment_factor = factor(treatment_factor,
+                                       levels=c("never_treat",
+                                                "A1_only",
+                                                "A2_only",
+                                                "A3_only",
+                                                "other")),
+             treatment_factor_never_treat = case_when(
+                 A1_never_treat_only ==1 ~ "A1_only",
+                A2_never_treat_only ==1 ~ "A2_only",
+                A3_never_treat_only ==1 ~ "A3_only",
+                never_treat_whole_period==1~"never_treat",
+                TRUE~ "other"
+             ),
+             treatment_factor_never_treat = factor(treatment_factor_never_treat,
+                                       levels=c("never_treat",
+                                                "A1_only",
+                                                "A2_only",
+                                                "A3_only",
+                                                "other")))
+  
+  return(dat)
 
 
-
-```
-
-```{r,eval=FALSE}
-
-new_df <- df %>%
-  mutate(A1=1, A2=0, A3=0, A4=0,A5=0,A6=0,A7=0, A8=0)
-
-w <- get_weights(delta=8, new_dat=new_df)
-
-df$ipw <- w
-
-library(survey)
-
-svy_design <- svydesign(
-  ids = ~id,             # clustering variable (person-level)
-  weights = ~ipw,        # your IPTW/IPCW weight
-  data = df
-)
-
-outcome <- df %>%
-   select(-Y1) %>%
-   select(contains("Y")) %>%
-   rowSums() 
-df$outcome <- outcome 
-
-model <- svyglm(outcome~A1, design=svy_design, family=poisson())
-summary(model)
-
-
-# also do 1{had dep event} if time 
-
-
-
-
-
-
-# pooled nb regression
-
-
+}
 
 ```
 
 
-# Data Quality Checks  {.tabset}
+```{r, warning=FALSE}
 
-## Pack Size
+df <- add_factors(df)
 
-```{r}
+cat("Follow natural treatment after week 6")
 
-L_length <- current_dat %>% 
-  select(contains("X")) %>%
-  ncol()
+get_treatment_effect(df, delta=3, form="outcome~treatment_factor",
+                     superlearner=FALSE) %>%
+  kbl() 
 
-current_dat %>%
-  select(contains("X")) %>%
-  pivot_longer(cols=everything()) %>%
-  mutate(name = factor(name, 
-                       levels=c(paste0("X", 1:L_length)))) %>%
-  filter(name %in% paste0("X", seq(1, L_length,by=10))) %>%
+cat("Never treat after week 6")
+get_treatment_effect(df, delta=8, form="outcome~treatment_factor_never_treat",
+                     superlearner=FALSE) %>%
+  kbl()
+
+```
+
+# Run Simulation
+
+```{r run-model-many-times}
+
+results <- map_df(1:300, ~{
+  
+    dat <- map_df(1:400, ~run_trial(weeks=16,
+                                           n_packs=2,
+                                           interval_length=2,
+                                    intervention=NULL) %>%
+                   mutate(id = sample(size=2, 1:40, replace=FALSE)))
+      
+    dat <- dat %>%
+      rename_with(.cols=contains("A"), ~gsub("_1", "", .x)) %>%
+      select(-c(A9,W9,X9))
+    
+    dat <- add_factors(dat)
+    
+    res1 <- get_treatment_effect(dat, delta=3, form="outcome~treatment_factor",
+                     superlearner=FALSE, quiet=TRUE) %>%
+      mutate(source="natural")
+    res2 <-  get_treatment_effect(dat, delta=3, form="outcome~treatment_factor_never_treat",
+                     superlearner=FALSE, quiet=TRUE) %>%
+      mutate(source="never treat")
+    
+    bind_rows(res1, res2)
+    
+})
+
+saveRDS(results, here("data/model_results.RDS"))
+
+```
+
+
+```{r, fig.width=8, fig.height=8}
+
+results <- readRDS(here("data/model_results.RDS"))
+
+truth <- readRDS(here("data/truth_trials.RDS"))
+
+
+
+truth_df <- as_tibble(truth) %>%
+  pivot_longer(cols=everything(),values_to="truth") %>%
+  mutate(source = ifelse(grepl("natural", name), 
+                         "natural", "never treat"),
+         var=case_when(
+           grepl("2", name) ~ "A1_only",
+           grepl("4", name) ~ "A2_only",
+           grepl("6", name) ~ "A3_only"
+         ))
+
+results <- results %>%
+  filter(!grepl("other", var)) %>%
+  mutate(var = gsub("treatment_factor|_never_treat", "", var)) 
+
+
+coverage <- results %>%
+  left_join(truth_df %>% select(-name)) %>%
+  mutate(contained=(truth >= lower & truth <= upper)) %>%
+  group_by(var,source) %>%
+  summarize(coverage=sum(contained)/n())
+  
+
+results %>%
   ggplot(aes(x=value)) +
-  geom_histogram() + 
-  facet_wrap(~name)+
-  theme_c()  +
-  labs(title="Distribution of the Pack Size, by Interval")
+  geom_histogram(bins=25) +
+  geom_vline(aes(xintercept=truth, color="True Value"),
+             data=truth_df,
+             linetype=2) +
+  facet_grid(var~source,
+             labeller = labeller(
+      var = c(
+        A1_only = "A1 = 1, A2 = 0, A3 = 0",
+        A2_only = "A1 = 0, A2 = 1, A3 = 0",
+        A3_only = "A1 = 0, A2 = 0, A3 = 1"
+      ))) +
+  theme_c(strip.text=element_text(
+    size=12, color="white",  face="bold",
+    margin = margin(t = 8, r = 8, b = 8, l = 8)),
+    legend.position="top",
+    legend.text=element_text(size=14))  +
+  labs(color="") +
+  scale_x_continuous(n.breaks=8)
+
+ggsave(here("figures/simulation_results.jpeg"))
+
+coverage
 
 ```
 
 
-## Distribution of 4-month outcomes
-
-```{r}
-
-df %>%
-  ggplot(aes(x=outcome)) +
-  geom_histogram() +
-  theme_c() +
-  labs(x="Number of Depredation Events") 
-
-
-
-df %>%
-  select(A1,A2,A3) %>%
-  pivot_longer(cols=everything()) %>%
-  group_by(name) %>%
-  summarize(treated=sum(value),
-         not = n() - treated) %>%
-  pivot_longer(2:3, names_to="treatment") %>%
-  ggplot(aes(x=name, y=value, fill=treatment)) +
-  geom_bar(stat="identity", position=position_dodge(1)) +
-  geom_label(aes(y=value, label=value), 
-             position=position_dodge(1)) +
-  theme_c() +
-  labs(x="",y="Count")
-
-
-
-
-```
 
 
